@@ -1,6 +1,32 @@
 // swift-tools-version: 5.9
 
 import PackageDescription
+import Foundation
+
+extension Package.Dependency {
+    enum LocalSearchPath {
+        case package(path: String, isRelative: Bool, isEnabled: Bool)
+    }
+
+    static func package(local localSearchPaths: LocalSearchPath..., remote: Package.Dependency) -> Package.Dependency {
+        for local in localSearchPaths {
+            switch local {
+            case .package(let path, let isRelative, let isEnabled):
+                guard isEnabled else { continue }
+                let url = if isRelative {
+                    URL(fileURLWithPath: path, relativeTo: URL(fileURLWithPath: #filePath))
+                } else {
+                    URL(fileURLWithPath: path)
+                }
+
+                if FileManager.default.fileExists(atPath: url.path) {
+                    return .package(path: url.path)
+                }
+            }
+        }
+        return remote
+    }
+}
 
 let package = Package(
     name: "MachOObjCSection",
@@ -17,9 +43,32 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/p-x9/MachOKit.git", from: "0.40.0"),
-        .package(url: "https://github.com/p-x9/swift-fileio.git", from: "0.9.0"),
-        .package(url: "https://github.com/p-x9/swift-objc-dump.git", from: "0.7.0")
+        .package(
+            local: .package(
+                path: "../MachOKit",
+                isRelative: true,
+                isEnabled: true
+            ),
+            remote: .package(
+                url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+                branch: "main"
+            ),
+        ),
+        .package(
+            local: .package(
+                path: "../swift-objc-dump",
+                isRelative: true,
+                isEnabled: true
+            ),
+            remote: .package(
+                url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
+                branch: "main"
+            ),
+        ),
+        .package(
+            url: "https://github.com/p-x9/swift-fileio.git",
+            from: "0.9.0"
+        ),
     ],
     targets: [
         .target(
@@ -28,7 +77,7 @@ let package = Package(
                 "MachOObjCSectionC",
                 "MachOKit",
                 .product(name: "FileIO", package: "swift-fileio"),
-                .product(name: "ObjCDump", package: "swift-objc-dump")
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
             ]
         ),
         .target(

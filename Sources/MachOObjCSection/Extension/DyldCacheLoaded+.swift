@@ -3,9 +3,10 @@
 //  MachOObjCSection
 //
 //  Created by p-x9 on 2024/11/02
-//  
+//
 //
 
+import Foundation
 import MachOKit
 
 #if !canImport(Darwin)
@@ -13,6 +14,54 @@ extension DyldCacheLoaded {
     // FIXME: fallback for linux
     public static var current: DyldCacheLoaded? {
         return nil
+    }
+}
+#endif
+
+#if canImport(Darwin)
+import os
+
+/// Cache for MachOImage lookups by index to avoid repeated memory accesses
+/// Thread-safe with lock protection for atomic check-and-set operations
+private final class MachOImageCache: @unchecked Sendable {
+    static let shared = MachOImageCache()
+
+    private let cache = NSCache<NSNumber, MachOImageWrapper>()
+    private var _lock = os_unfair_lock()
+
+    private init() {}
+
+    /// Get cached MachOImage or compute and cache it atomically
+    /// - Parameters:
+    ///   - index: The image index
+    ///   - compute: Closure to compute the MachOImage if not cached
+    /// - Returns: The cached or newly computed MachOImage
+    func machO(at index: Int, orCompute compute: () -> MachOImage?) -> MachOImage? {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+
+        let key = NSNumber(value: index)
+        if let cached = cache.object(forKey: key) {
+            return cached.image
+        }
+        guard let result = compute() else {
+            return nil
+        }
+        cache.setObject(MachOImageWrapper(result), forKey: key)
+        return result
+    }
+
+    func invalidate() {
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        cache.removeAllObjects()
+    }
+}
+
+private final class MachOImageWrapper: NSObject {
+    let image: MachOImage
+    init(_ image: MachOImage) {
+        self.image = image
     }
 }
 #endif
@@ -74,24 +123,26 @@ extension DyldCacheLoaded {
 
 extension DyldCacheLoaded {
     func machO(at index: Int) -> MachOImage? {
+        #if canImport(Darwin)
+        return MachOImageCache.shared.machO(at: index) { [self] in
+            computeMachO(at: index)
+        }
+        #else
+        return computeMachO(at: index)
+        #endif
+    }
+
+    private func computeMachO(at index: Int) -> MachOImage? {
         if let ro = headerOptimizationRO64,
            ro.contains(index: index) {
-            guard let header = ro.headerInfos(in: self).first(
-                where: {
-                    $0.index == index
-                }
-            ) else {
+            guard let header = ro.headerInfo(at: index, in: self) else {
                 return nil
             }
             return header.machO(in: self)
         }
         if let ro = headerOptimizationRO32,
            ro.contains(index: index) {
-            guard let header = ro.headerInfos(in: self).first(
-                where: {
-                    $0.index == index
-                }
-            ) else {
+            guard let header = ro.headerInfo(at: index, in: self) else {
                 return nil
             }
             return header.machO(in: self)

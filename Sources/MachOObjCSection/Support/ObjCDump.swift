@@ -55,7 +55,7 @@ extension ObjCProperty {
     ) -> ObjCPropertyInfo {
        .init(
             name: name,
-            attributes: attributes,
+            attributesString: attributes,
             isClassProperty: isClassProperty
         )
     }
@@ -181,6 +181,8 @@ extension ObjCProtocolProtocol {
             properties: properties,
             classMethods: classMethods,
             methods: methods,
+            optionalClassProperties: [],
+            optionalProperties: [],
             optionalClassMethods: optionalClassMethods,
             optionalMethods: optionalMethods
         )
@@ -285,11 +287,14 @@ extension ObjCClassProtocol {
         )
     }
 
-    public func info(in machO: MachOImage) -> ObjCClassInfo? {
+    public func name(in machO: MachOImage) -> String? {
+        data(in: machO)?.data.name(in: machO)
+    }
+    
+    private func data(in machO: MachOImage) -> (machO: MachOImage, data: ClassROData, metaData: ClassROData)? {
         guard let (targetMachO, meta) = metaClass(in: machO) else {
             return nil
         }
-
         let data: ClassROData
         let metaData: ClassROData
 
@@ -322,6 +327,11 @@ extension ObjCClassProtocol {
         } else {
             return nil
         }
+        return (targetMachO, data, metaData)
+    }
+    
+    public func info(in machO: MachOImage) -> ObjCClassInfo? {
+        guard let (targetMachO, data, metaData) = data(in: machO) else { return nil }
 
         guard let name = data.name(in: machO) else {
             return nil
@@ -414,6 +424,20 @@ extension ObjCClassProtocol {
             classMethods: classMethods,
             methods: methods
         )
+    }
+    
+    public func infoWithSuperclasses(in machO: MachOImage) -> [ObjCClassInfo] {
+        guard let currentInfo = info(in: machO) else { return [] }
+        var superclass = superClass(in: machO)?.1
+        var infos: [ObjCClassInfo] = [currentInfo]
+        while let currentSuperclass = superclass {
+            if let info = currentSuperclass.info(in: machO) {
+                infos.append(info)
+            }
+            superclass = currentSuperclass.superClass(in: machO)
+        }
+        
+        return infos
     }
 }
 

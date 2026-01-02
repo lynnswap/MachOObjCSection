@@ -14,7 +14,7 @@ final class MachOObjCSectionTests: XCTestCase {
         machOImage = MachOImage(name: "Foundation")!
 
         // File
-        let path = "/System/Applications/Freeform.app/Contents/MacOS/Freeform"
+        let path = "/Volumes/RE/Xcode/26.1/SharedFrameworks/DVTStructuredLayoutKit.framework/Versions/A/DVTStructuredLayoutKit"
         let url = URL(fileURLWithPath: path)
         guard let file = try? MachOKit.loadFromFile(url: url) else {
             XCTFail("Failed to load file")
@@ -104,12 +104,12 @@ extension MachOObjCSectionTests {
     func testClassesInFile() {
         let machO = machOFile!
         guard let classes = machO.objc.classes64 else { return }
-        for cls in classes.prefix(100) {
+        for cls in classes {
             guard let info = cls.info(in: machO) else {
                 XCTFail("Failed to parse class")
                 continue
             }
-            print(info.headerString)
+//            print(info.headerString)
         }
     }
 
