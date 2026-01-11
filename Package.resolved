@@ -1,12 +1,48 @@
 {
   "pins" : [
     {
+      "identity" : "frameworktoolbox",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
+      "state" : {
+        "branch" : "main",
+        "revision" : "f2638e3d32693704c1f46465f924c8393f48cca3"
+      }
+    },
+    {
+      "identity" : "machokit",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "0ddc00a5688c99647a0078ab2aa469ed9ae076e5"
+      }
+    },
+    {
       "identity" : "swift-fileio",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/p-x9/swift-fileio.git",
       "state" : {
         "revision" : "76a4c719e796a1e5052e283788d8cd92408758fe",
         "version" : "0.12.0"
+      }
+    },
+    {
+      "identity" : "swift-objc-dump",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
+      "state" : {
+        "branch" : "main",
+        "revision" : "cab0d684eb13189d0221489ec196533a16997513"
+      }
+    },
+    {
+      "identity" : "swift-syntax",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "state" : {
+        "revision" : "f99ae8aa18f0cf0d53481901f88a0991dc3bd4a2",
+        "version" : "601.0.1"
       }
     }
   ],

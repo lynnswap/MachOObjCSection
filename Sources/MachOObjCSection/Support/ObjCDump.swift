@@ -425,20 +425,6 @@ extension ObjCClassProtocol {
             methods: methods
         )
     }
-    
-    public func infoWithSuperclasses(in machO: MachOImage) -> [ObjCClassInfo] {
-        guard let currentInfo = info(in: machO) else { return [] }
-        var superclass = superClass(in: machO)?.1
-        var infos: [ObjCClassInfo] = [currentInfo]
-        while let currentSuperclass = superclass {
-            if let info = currentSuperclass.info(in: machO) {
-                infos.append(info)
-            }
-            superclass = currentSuperclass.superClass(in: machO)
-        }
-        
-        return infos
-    }
 }
 
 // MARK: Category
