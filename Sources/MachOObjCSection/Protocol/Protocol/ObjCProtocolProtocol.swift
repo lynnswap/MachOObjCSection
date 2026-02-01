@@ -211,15 +211,19 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCProtocolList64.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCProtocolList64.Header>.size
+              ) else {
+            return nil
+        }
         return data.withUnsafeBytes {
             guard let baseAddress = $0.baseAddress else { return nil }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: baseAddress,
-                offset: numericCast(resolved.offset)
+                offset: resolvedOffset
             )
         }
     }
@@ -266,11 +270,12 @@ extension ObjCProtocolProtocol {
         guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
             return nil
         }
+        guard let readOffset = Int(exactly: fileOffset) else { return nil }
 
         if machO.is64Bit {
-            let address: UInt64 = try! fileHandle.read(
-                offset: numericCast(fileOffset)
-            )
+            guard let address: UInt64 = try? fileHandle.read(offset: readOffset) else {
+                return nil
+            }
             guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: address) else {
                 return nil
             }
@@ -279,9 +284,9 @@ extension ObjCProtocolProtocol {
                 offset: fileOffset
             )
         } else {
-            let _address: UInt32 = try! fileHandle.read(
-                offset: numericCast(fileOffset)
-            )
+            guard let _address: UInt32 = try? fileHandle.read(offset: readOffset) else {
+                return nil
+            }
             let address: UInt64 = numericCast(_address)
             guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: address) else {
                 return nil
@@ -339,15 +344,19 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCMethodList.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCMethodList.Header>.size
+              ) else {
+            return nil
+        }
         return data.withUnsafeBytes {
             guard let baseAddress = $0.baseAddress else { return nil }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: baseAddress,
-                offset: numericCast(resolved.offset),
+                offset: resolvedOffset,
                 is64Bit: machO.is64Bit
             )
         }
@@ -366,15 +375,19 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCPropertyList.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCPropertyList.Header>.size
+              ) else {
+            return nil
+        }
         return data.withUnsafeBytes {
             guard let baseAddress = $0.baseAddress else { return nil }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: baseAddress,
-                offset: numericCast(resolved.offset),
+                offset: resolvedOffset,
                 is64Bit: machO.is64Bit
             )
         }

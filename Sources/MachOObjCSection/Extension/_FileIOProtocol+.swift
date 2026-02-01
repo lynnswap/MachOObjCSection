@@ -16,29 +16,41 @@ internal import FileIO
 @_implementationOnly import FileIO
 #endif
 
+@inline(__always)
+private func _safeInt(_ value: UInt64) -> Int? {
+    Int(exactly: value)
+}
+
+@inline(__always)
+private func _safeInt(_ value: Int64) -> Int? {
+    Int(exactly: value)
+}
+
+@inline(__always)
+private func _safeSize(_ entrySize: Int, _ numberOfElements: Int) -> Int? {
+    guard entrySize >= 0, numberOfElements >= 0 else { return nil }
+    let (size, overflow) = entrySize.multipliedReportingOverflow(by: numberOfElements)
+    guard !overflow else { return nil }
+    return size
+}
+
 extension _FileIOProtocol {
     func readDataSequence<Element>(
         offset: UInt64,
         numberOfElements: Int,
         swapHandler: ((inout Data) -> Void)? = nil
     ) /*throws*/ -> DataSequence<Element> where Element: LayoutWrapper {
-        let size = Element.layoutSize * numberOfElements
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: size
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= size,
-            "Invalid Data Size"
-        )
+        guard let offset = _safeInt(offset),
+              let size = _safeSize(Element.layoutSize, numberOfElements),
+              Element.layoutSize == MemoryLayout<Element>.size,
+              var data = try? readData(offset: offset, length: size) else {
+            return .init(data: Data(), numberOfElements: 0)
+        }
+        let actualCount = min(numberOfElements, data.count / Element.layoutSize)
         if let swapHandler { swapHandler(&data) }
         return .init(
             data: data,
-            numberOfElements: numberOfElements
+            numberOfElements: actualCount
         )
     }
 
@@ -48,19 +60,17 @@ extension _FileIOProtocol {
         numberOfElements: Int,
         swapHandler: ((inout Data) -> Void)? = nil
     ) /*throws*/ -> DataSequence<Element> {
-        let size = MemoryLayout<Element>.size * numberOfElements
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: size
-        )
-        precondition(
-            data.count >= size,
-            "Invalid Data Size"
-        )
+        let entrySize = MemoryLayout<Element>.size
+        guard let offset = _safeInt(offset),
+              let size = _safeSize(entrySize, numberOfElements),
+              var data = try? readData(offset: offset, length: size) else {
+            return .init(data: Data(), numberOfElements: 0)
+        }
+        let actualCount = min(numberOfElements, data.count / entrySize)
         if let swapHandler { swapHandler(&data) }
         return .init(
             data: data,
-            numberOfElements: numberOfElements
+            numberOfElements: actualCount
         )
     }
 
@@ -71,19 +81,13 @@ extension _FileIOProtocol {
         numberOfElements: Int,
         swapHandler: ((inout Data) -> Void)? = nil
     ) -> DataSequence<Element> where Element: LayoutWrapper {
-        let size = entrySize * numberOfElements
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: size
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= size,
-            "Invalid Data Size"
-        )
+        guard entrySize > 0,
+              let offset = _safeInt(offset),
+              let size = _safeSize(entrySize, numberOfElements),
+              Element.layoutSize == MemoryLayout<Element>.size,
+              var data = try? readData(offset: offset, length: size) else {
+            return .init(data: Data(), numberOfElements: 0)
+        }
         if let swapHandler { swapHandler(&data) }
         return .init(
             data: data,
@@ -99,15 +103,12 @@ extension _FileIOProtocol {
         numberOfElements: Int,
         swapHandler: ((inout Data) -> Void)? = nil
     ) -> DataSequence<Element> {
-        let size = entrySize * numberOfElements
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: size
-        )
-        precondition(
-            data.count >= size,
-            "Invalid Data Size"
-        )
+        guard entrySize > 0,
+              let offset = _safeInt(offset),
+              let size = _safeSize(entrySize, numberOfElements),
+              var data = try? readData(offset: offset, length: size) else {
+            return .init(data: Data(), numberOfElements: 0)
+        }
         if let swapHandler { swapHandler(&data) }
         return .init(
             data: data,
@@ -121,18 +122,19 @@ extension _FileIOProtocol {
     func read<Element>(
         offset: UInt64
     ) -> Optional<Element> where Element: LayoutWrapper {
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        return try! read(offset: numericCast(offset), as: Element.self)
+        guard Element.layoutSize == MemoryLayout<Element>.size,
+              let offset = _safeInt(offset) else {
+            return nil
+        }
+        return try? read(offset: offset, as: Element.self)
     }
 
     @inline(__always)
     func read<Element>(
         offset: UInt64
     ) -> Optional<Element> {
-        try! read(offset: numericCast(offset), as: Element.self)
+        guard let offset = _safeInt(offset) else { return nil }
+        return try? read(offset: offset, as: Element.self)
     }
 
 
@@ -141,11 +143,10 @@ extension _FileIOProtocol {
     func read<Element>(
         offset: UInt64
     ) -> Element where Element: LayoutWrapper {
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        return try! read(offset: numericCast(offset), as: Element.self)
+        guard let value: Element = read(offset: offset) else {
+            fatalError("Failed to read LayoutWrapper at offset \(offset)")
+        }
+        return value
     }
 
     @_disfavoredOverload
@@ -153,7 +154,10 @@ extension _FileIOProtocol {
     func read<Element>(
         offset: UInt64
     ) -> Element {
-        try! read(offset: numericCast(offset), as: Element.self)
+        guard let value: Element = read(offset: offset) else {
+            fatalError("Failed to read value at offset \(offset)")
+        }
+        return value
     }
 }
 
@@ -162,18 +166,12 @@ extension _FileIOProtocol {
         offset: UInt64,
         swapHandler: ((inout Data) -> Void)?
     ) -> Optional<Element> where Element: LayoutWrapper {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: Element.layoutSize
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= Element.layoutSize,
-            "Invalid Data Size"
-        )
+        guard Element.layoutSize == MemoryLayout<Element>.size,
+              let offset = _safeInt(offset),
+              var data = try? readData(offset: offset, length: Element.layoutSize),
+              data.count >= Element.layoutSize else {
+            return nil
+        }
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
             $0.load(as: Element.self)
@@ -184,14 +182,12 @@ extension _FileIOProtocol {
         offset: UInt64,
         swapHandler: ((inout Data) -> Void)?
     ) -> Optional<Element> {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: MemoryLayout<Element>.size
-        )
-        precondition(
-            data.count >= MemoryLayout<Element>.size,
-            "Invalid Data Size"
-        )
+        let size = MemoryLayout<Element>.size
+        guard let offset = _safeInt(offset),
+              var data = try? readData(offset: offset, length: size),
+              data.count >= size else {
+            return nil
+        }
         if let swapHandler { swapHandler(&data) }
         return data.withUnsafeBytes {
             $0.load(as: Element.self)
@@ -203,22 +199,10 @@ extension _FileIOProtocol {
         offset: UInt64,
         swapHandler: ((inout Data) -> Void)?
     ) -> Element where Element: LayoutWrapper {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: Element.layoutSize
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= Element.layoutSize,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+        guard let value: Element = read(offset: offset, swapHandler: swapHandler) else {
+            fatalError("Failed to read LayoutWrapper at offset \(offset)")
         }
+        return value
     }
 
     @_disfavoredOverload
@@ -226,18 +210,10 @@ extension _FileIOProtocol {
         offset: UInt64,
         swapHandler: ((inout Data) -> Void)?
     ) -> Element {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: MemoryLayout<Element>.size
-        )
-        precondition(
-            data.count >= MemoryLayout<Element>.size,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+        guard let value: Element = read(offset: offset, swapHandler: swapHandler) else {
+            fatalError("Failed to read value at offset \(offset)")
         }
+        return value
     }
 }
 
@@ -248,10 +224,11 @@ extension _FileIOProtocol {
         offset: UInt64,
         size: Int
     ) -> String? {
-        let data = try! readData(
-            offset: numericCast(offset),
-            length: size
-        )
+        guard let offset = _safeInt(offset),
+              let data = try? readData(offset: offset, length: size),
+              !data.isEmpty else {
+            return nil
+        }
         return String(cString: data)
     }
 
@@ -264,10 +241,11 @@ extension _FileIOProtocol {
         var data = Data()
         var offset = offset
         while true {
-            guard let new = try? readData(
-                offset: numericCast(offset),
-                upToCount: step
-            ) else { break }
+            guard let nextOffset = _safeInt(offset),
+                  let new = try? readData(
+                    offset: nextOffset,
+                    upToCount: step
+                  ) else { break }
             if new.isEmpty { break }
             data.append(new)
             if new.contains(0) { break }
@@ -283,9 +261,10 @@ extension MemoryMappedFile {
     func readString(
         offset: UInt64
     ) -> String? {
-        String(
+        guard let offset = _safeInt(offset) else { return nil }
+        return String(
             cString: ptr
-                .advanced(by: numericCast(offset))
+                .advanced(by: offset)
                 .assumingMemoryBound(to: CChar.self)
         )
     }

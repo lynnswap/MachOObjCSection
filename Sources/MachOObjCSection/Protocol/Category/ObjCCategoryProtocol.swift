@@ -337,10 +337,13 @@ extension ObjCCategoryProtocol {
             targetMachO = machO
         }
 
-        let layout: ObjCClass.Layout = fileHandle.read(offset: fileOffset)
+        guard let layout: ObjCClass.Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
         let cls: ObjCClass = .init(
             layout: layout,
-            offset: numericCast(resolved.offset)
+            offset: resolvedOffset
         )
         return (targetMachO, cls)
     }
@@ -367,10 +370,13 @@ extension ObjCCategoryProtocol {
             targetMachO = machO
         }
 
-        let layout: ObjCStubClass.Layout = fileHandle.read(offset: fileOffset)
+        guard let layout: ObjCStubClass.Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
         let cls: ObjCStubClass = .init(
             layout: layout,
-            offset: numericCast(resolved.offset)
+            offset: resolvedOffset
         )
         return (targetMachO, cls)
     }
@@ -412,15 +418,19 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCMethodList.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCMethodList.Header>.size
+              ) else {
+            return nil
+        }
         let list: ObjCMethodList? = data.withUnsafeBytes {
             guard let ptr = $0.baseAddress else { return nil }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: ptr,
-                offset: numericCast(resolved.offset),
+                offset: resolvedOffset,
                 is64Bit: machO.is64Bit
             )
         }
@@ -445,17 +455,21 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCPropertyList.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCPropertyList.Header>.size
+              ) else {
+            return nil
+        }
         let list: ObjCPropertyList? = data.withUnsafeBytes {
             guard let ptr = $0.baseAddress else {
                 return nil
             }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: ptr,
-                offset: numericCast(resolved.offset),
+                offset: resolvedOffset,
                 is64Bit: machO.is64Bit
             )
         }
@@ -480,18 +494,22 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let data = try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<ObjCProtocolList.Header>.size
-        )
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<ObjCProtocolList.Header>.size
+              ) else {
+            return nil
+        }
 
         let list: ObjCProtocolList? = data.withUnsafeBytes {
             guard let ptr = $0.baseAddress else {
                 return nil
             }
+            guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
             return .init(
                 ptr: ptr,
-                offset: numericCast(resolved.offset)
+                offset: resolvedOffset
             )
         }
         return list

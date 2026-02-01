@@ -333,9 +333,12 @@ extension MachOImage.ObjectiveC {
                 let layout = ptr
                     .assumingMemoryBound(to: Categgory.Layout.self)
                     .pointee
+                guard offset >= 0, let offsetValue = Int(exactly: offset) else {
+                    return nil
+                }
                 return .init(
                     layout: layout,
-                    offset: numericCast(offset),
+                    offset: offsetValue,
                     isCatlist2: isCatlist2
                 )
             }
@@ -367,7 +370,10 @@ extension MachOImage.ObjectiveC {
                 let layout = ptr
                     .assumingMemoryBound(to: Class.Layout.self)
                     .pointee
-                return .init(layout: layout, offset: numericCast(offset))
+                guard offset >= 0, let offsetValue = Int(exactly: offset) else {
+                    return nil
+                }
+                return .init(layout: layout, offset: offsetValue)
             }
     }
 
@@ -398,7 +404,10 @@ extension MachOImage.ObjectiveC {
                 let layout = ptr
                     .assumingMemoryBound(to: Protocol.Layout.self)
                     .pointee
-                return .init(layout: layout, offset: numericCast(offset))
+                guard offset >= 0, let offsetValue = Int(exactly: offset) else {
+                    return nil
+                }
+                return .init(layout: layout, offset: offsetValue)
             }
     }
 }

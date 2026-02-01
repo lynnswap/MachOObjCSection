@@ -63,11 +63,18 @@ extension MachOFile.ObjectiveC {
             __objc_methlist.offset
         }
 
-        return .init(
-            data: try! machO.fileHandle.readData(
-                offset: numericCast(__objc_methlist.offset + machO.headerStartOffset),
+        let (readOffset, overflow) = __objc_methlist.offset
+            .addingReportingOverflow(machO.headerStartOffset)
+        guard !overflow,
+              __objc_methlist.size >= 0,
+              let data = try? machO.fileHandle.readData(
+                offset: readOffset,
                 length: __objc_methlist.size
-            ),
+              ) else {
+            return nil
+        }
+        return .init(
+            data: data,
             offset: offset,
             align: __objc_methlist.align,
             is64Bit: machO.is64Bit
@@ -276,16 +283,20 @@ extension MachOFile.ObjectiveC {
         guard let fileSlice = machO._fileSliceForSection(section: section) else {
             return nil
         }
-        let data = try! fileSlice.readData(
-            offset: 0,
-            length: section.size
-        )
+        guard section.size >= 0,
+              let data = try? fileSlice.readData(
+                offset: 0,
+                length: section.size
+              ) else {
+            return nil
+        }
 
         let offset: UInt64 = if let cache = machO.cache {
             numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
         } else {
             numericCast(section.offset)
         }
+        guard let baseOffset = Int(exactly: offset) else { return nil }
 
         typealias Pointer = Categgory.Layout.Pointer
         let pointerSize: Int = MemoryLayout<Pointer>.size
@@ -297,8 +308,7 @@ extension MachOFile.ObjectiveC {
         return sequnece.enumerated()
             .map { i, value in
                 UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
+                    fieldOffset: baseOffset + pointerSize * i,
                     value: numericCast(value)
                 )
             }
@@ -309,12 +319,13 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Categgory.Layout = fileHandle.read(
+                guard let layout: Categgory.Layout = fileHandle.read(
                     offset: fileOffset
-                )
+                ) else { return nil }
+                guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
                 return .init(
                     layout: layout,
-                    offset: numericCast(resolved.offset),
+                    offset: resolvedOffset,
                     isCatlist2: isCatlist2
                 )
             }
@@ -329,16 +340,20 @@ extension MachOFile.ObjectiveC {
         guard let fileSlice = machO._fileSliceForSection(section: section) else {
             return nil
         }
-        let data = try! fileSlice.readData(
-            offset: 0,
-            length: section.size
-        )
+        guard section.size >= 0,
+              let data = try? fileSlice.readData(
+                offset: 0,
+                length: section.size
+              ) else {
+            return nil
+        }
 
         let offset: UInt64 = if let cache = machO.cache {
             numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
         } else {
             numericCast(section.offset)
         }
+        guard let baseOffset = Int(exactly: offset) else { return nil }
 
         typealias Pointer = Class.Layout.Pointer
         let pointerSize: Int = MemoryLayout<Pointer>.size
@@ -350,8 +365,7 @@ extension MachOFile.ObjectiveC {
         return sequnece.enumerated()
             .map { i, value in
                 UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
+                    fieldOffset: baseOffset + pointerSize * i,
                     value: numericCast(value)
                 )
             }
@@ -362,12 +376,13 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Class.Layout = fileHandle.read(
+                guard let layout: Class.Layout = fileHandle.read(
                     offset: fileOffset
-                )
+                ) else { return nil }
+                guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
                 return .init(
                     layout: layout,
-                    offset: numericCast(resolved.offset)
+                    offset: resolvedOffset
                 )
             }
     }
@@ -381,16 +396,20 @@ extension MachOFile.ObjectiveC {
         guard let fileSlice = machO._fileSliceForSection(section: section) else {
             return nil
         }
-        let data = try! fileSlice.readData(
-            offset: 0,
-            length: section.size
-        )
+        guard section.size >= 0,
+              let data = try? fileSlice.readData(
+                offset: 0,
+                length: section.size
+              ) else {
+            return nil
+        }
 
         let offset: UInt64 = if let cache = machO.cache {
             numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
         } else {
             numericCast(section.offset)
         }
+        guard let baseOffset = Int(exactly: offset) else { return nil }
 
         typealias Pointer = Protocol.Layout.Pointer
         let pointerSize: Int = MemoryLayout<Pointer>.size
@@ -402,8 +421,7 @@ extension MachOFile.ObjectiveC {
         return sequnece.enumerated()
             .map { i, value in
                 UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
+                    fieldOffset: baseOffset + pointerSize * i,
                     value: numericCast(value)
                 )
             }
@@ -414,12 +432,13 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Protocol.Layout = fileHandle.read(
+                guard let layout: Protocol.Layout = fileHandle.read(
                     offset: fileOffset
-                )
+                ) else { return nil }
+                guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
                 return .init(
                     layout: layout,
-                    offset: numericCast(resolved.offset)
+                    offset: resolvedOffset
                 )
             }
     }

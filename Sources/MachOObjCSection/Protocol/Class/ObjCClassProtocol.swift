@@ -219,10 +219,13 @@ extension ObjCClassProtocol {
             targetMachO = machO
         }
 
-        let layout: Layout = fileHandle.read(offset: fileOffset)
+        guard let layout: Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
         let cls: Self = .init(
             layout: layout,
-            offset: numericCast(resolved.offset)
+            offset: resolvedOffset
         )
         return (targetMachO, cls)
     }
