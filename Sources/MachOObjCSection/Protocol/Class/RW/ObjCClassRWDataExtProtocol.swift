@@ -101,3 +101,32 @@ extension ObjCClassRWDataExtProtocol {
         )
     }
 }
+
+extension ObjCClassRWDataExtProtocol {
+    private var roOffset: Int? {
+        MemoryLayout<Layout>.offset(of: \.ro)
+    }
+
+    public func classROData(in machO: MachOFile) -> ObjCClassROData? {
+        guard let fieldOffset = roOffset else { return nil }
+
+        let unresolved = UnresolvedValue(
+            fieldOffset: offset + fieldOffset,
+            value: numericCast(layout.ro)
+        )
+        let resolved = machO.resolveRebase(unresolved)
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
+            return nil
+        }
+
+        guard let layout: ObjCClassROData.Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
+        let classData = ObjCClassROData(
+            layout: layout,
+            offset: resolvedOffset
+        )
+        return classData
+    }
+}

@@ -50,12 +50,15 @@ extension ObjCIvarProtocol {
             return nil
         }
 
-        return try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<UInt32>.size
-        ).withUnsafeBytes {
-            $0.load(as: UInt32.self)
+        guard let readOffset = Int(exactly: fileOffset),
+              let data = try? fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<UInt32>.size
+              ),
+              data.count >= MemoryLayout<UInt32>.size else {
+            return nil
         }
+        return data.withUnsafeBytes { $0.load(as: UInt32.self) }
     }
 
     public func name(in machO: MachOFile) -> String? {

@@ -52,17 +52,21 @@ public struct ObjCPropertyRelativeListList: RelativeListListProtocol {
 
         guard let machO = cache._machO(at: entry.imageIndex)?.value else { return nil }
 
-        let data = try! cache.fileHandle.readData(
-            offset: numericCast(resolvedOffset),
-            length: MemoryLayout<List.Header>.size
-        )
+        guard let readOffset = Int(exactly: resolvedOffset),
+              let data = try? cache.fileHandle.readData(
+                offset: readOffset,
+                length: MemoryLayout<List.Header>.size
+              ) else {
+            return nil
+        }
         let list: List? = data.withUnsafeBytes {
             guard let ptr = $0.baseAddress else {
                 return nil
             }
+            guard let listOffset = Int(exactly: offset) else { return nil }
             return .init(
                 ptr: ptr,
-                offset: numericCast(offset),
+                offset: listOffset,
                 is64Bit: machO.is64Bit
             )
         }

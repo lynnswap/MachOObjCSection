@@ -135,10 +135,15 @@ extension ObjCMethodList {
             return nil
         }
 
-        let offset: UInt64 = numericCast(offset + MemoryLayout<Header>.size)
+        let listOffset = offset
+        let (headerOffset, overflow) = listOffset
+            .addingReportingOverflow(MemoryLayout<Header>.size)
+        guard !overflow, headerOffset >= 0 else { return nil }
+        let offset: UInt64 = UInt64(headerOffset)
         guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: offset) else {
             return nil
         }
+        guard let baseFileOffset = Int(exactly: fileOffset) else { return nil }
 
         switch listKind {
         case .pointer where machO.is64Bit:
@@ -217,29 +222,40 @@ extension ObjCMethodList {
             let size = MemoryLayout<ObjCMethod.RelativeInDirect>.size
             return sequence.enumerated()
                 .map {
-                    let offset = numericCast(offset) + $0 * size
-                    let fileOffset = numericCast(fileOffset) + $0 * size
-
+                    let (entryOffset, entryOffsetOverflow) = headerOffset
+                        .addingReportingOverflow($0 * size)
+                    let (entryFileOffset, entryFileOffsetOverflow) = baseFileOffset
+                        .addingReportingOverflow($0 * size)
+                    if entryOffsetOverflow || entryFileOffsetOverflow {
+                        return ObjCMethod(name: "", types: "", imp: 0)
+                    }
                     var name = ""
-                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
-                        forAddress: try! fileHandle.read(
-                            offset: numericCast(fileOffset) + numericCast($1.name.offset)
-                        )
-                    ) {
-                        name = fileHandle.readString(
-                            offset: fileOffset
-                        ) ?? ""
+                    let nameOffset = entryFileOffset + Int($1.name.offset)
+                    if nameOffset >= 0,
+                       let address: UInt64 = try? fileHandle.read(offset: nameOffset),
+                       let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
+                        forAddress: address
+                       ) {
+                        name = fileHandle.readString(offset: fileOffset) ?? ""
                     }
 
-                    let types: Int64 = numericCast(fileOffset) + numericCast($1.types.offset) + 4
+                    let typesOffset = Int64(entryFileOffset)
+                        + Int64($1.types.offset)
+                        + 4
+                    let types = if typesOffset >= 0 {
+                        fileHandle.readString(offset: UInt64(typesOffset)) ?? ""
+                    } else {
+                        ""
+                    }
 
-                    let imp: UInt64 = numericCast(offset + numericCast($1.imp.offset)) + 8
+                    let impOffset = Int64(entryOffset)
+                        + Int64($1.imp.offset)
+                        + 8
+                    let imp: UInt64 = impOffset >= 0 ? UInt64(impOffset) : 0
 
                     return ObjCMethod(
                         name: name,
-                        types: fileHandle.readString(
-                            offset: numericCast(types)
-                        ) ?? "",
+                        types: types,
                         imp: imp
                     )
                 }
@@ -256,20 +272,37 @@ extension ObjCMethodList {
 
             return sequence.enumerated()
                 .map {
-                    let offset = numericCast(offset) + $0 * size
-                    let _name: Int64 = numericCast($1.name.offset)
-                    let _types: UInt64 = numericCast(offset + numericCast($1.types.offset)) + 4
-                    let imp: UInt64 = numericCast(offset + numericCast($1.imp.offset)) + 8
+                    let (entryOffset, entryOffsetOverflow) = headerOffset
+                        .addingReportingOverflow($0 * size)
+                    if entryOffsetOverflow {
+                        return ObjCMethod(name: "", types: "", imp: 0)
+                    }
+
+                    let nameOffsetValue = Int64($1.name.offset)
+                    let typesOffset = Int64(entryOffset)
+                        + Int64($1.types.offset)
+                        + 4
+                    let impOffset = Int64(entryOffset)
+                        + Int64($1.imp.offset)
+                        + 8
 
                     var name = ""
-                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: nameOffsetInCache + numericCast(_name)) {
+                    if nameOffsetValue >= 0,
+                       let nameOffset = UInt64(exactly: nameOffsetValue),
+                       let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
+                        forOffset: nameOffsetInCache + nameOffset
+                       ) {
                         name = fileHandle.readString(
                             offset: fileOffset
                         ) ?? ""
                     }
 
                     var types = ""
-                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: numericCast(_types)) {
+                    if typesOffset >= 0,
+                       let typesOffsetValue = UInt64(exactly: typesOffset),
+                       let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
+                        forOffset: typesOffsetValue
+                       ) {
                         types = fileHandle.readString(
                             offset: fileOffset
                         ) ?? ""
@@ -278,7 +311,7 @@ extension ObjCMethodList {
                     return ObjCMethod(
                         name: name,
                         types: types,
-                        imp: imp
+                        imp: impOffset >= 0 ? UInt64(impOffset) : 0
                     )
                 }
         }

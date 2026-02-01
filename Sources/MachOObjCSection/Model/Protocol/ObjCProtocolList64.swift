@@ -71,13 +71,14 @@ extension ObjCProtocolList64 {
                     targetMachO = machO
                 }
 
-                let layout: ObjCProtocol64.Layout = fileHandle.read(
-                    offset:  numericCast(fileOffset),
+                guard let layout: ObjCProtocol64.Layout = fileHandle.read(
+                    offset: fileOffset,
                     swapHandler: { _ in }
-                )
+                ) else { return nil }
+                guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
                 let `protocol`: ObjCProtocol = .init(
                     layout: layout,
-                    offset: numericCast(resolved.offset)
+                    offset: resolvedOffset
                 )
                 return (targetMachO, `protocol`)
             }

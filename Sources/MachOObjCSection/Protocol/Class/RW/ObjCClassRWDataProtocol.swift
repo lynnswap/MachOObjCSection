@@ -79,3 +79,58 @@ extension ObjCClassRWDataProtocol {
         return classData
     }
 }
+
+extension ObjCClassRWDataProtocol {
+    private var roOrRWExtOffset: Int? {
+        MemoryLayout<Layout>.offset(of: \.ro_or_rw_ext)
+    }
+
+    public func classROData(in machO: MachOFile) -> ObjCClassROData? {
+        guard hasRO else { return nil }
+        guard let fieldOffset = roOrRWExtOffset else { return nil }
+
+        let unresolved = UnresolvedValue(
+            fieldOffset: offset + fieldOffset,
+            value: numericCast(layout.ro_or_rw_ext)
+        )
+        let resolved = machO.resolveRebase(unresolved)
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
+            return nil
+        }
+
+        guard let layout: ObjCClassROData.Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
+        let classData = ObjCClassROData(
+            layout: layout,
+            offset: resolvedOffset
+        )
+        return classData
+    }
+
+    public func ext(in machO: MachOFile) -> ObjCClassRWDataExt? {
+        guard hasExt else { return nil }
+        guard let fieldOffset = roOrRWExtOffset else { return nil }
+
+        let rawValue: UInt64 = numericCast(layout.ro_or_rw_ext)
+        let unresolved = UnresolvedValue(
+            fieldOffset: offset + fieldOffset,
+            value: rawValue & ~1
+        )
+        let resolved = machO.resolveRebase(unresolved)
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
+            return nil
+        }
+
+        guard let layout: ObjCClassRWDataExt.Layout = fileHandle.read(offset: fileOffset) else {
+            return nil
+        }
+        guard let resolvedOffset = Int(exactly: resolved.offset) else { return nil }
+        let classData = ObjCClassRWDataExt(
+            layout: layout,
+            offset: resolvedOffset
+        )
+        return classData
+    }
+}

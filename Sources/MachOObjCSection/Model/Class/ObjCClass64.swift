@@ -50,7 +50,20 @@ public struct ObjCClass64: LayoutWrapper, ObjCClassProtocol {
 
 extension ObjCClass64 {
     public func classROData(in machO: MachOFile) -> ClassROData? {
-        _classROData(in: machO)
+        if !hasRWPointer(in: machO) {
+            return _classROData(in: machO)
+        }
+        guard let rw = classRWData(in: machO) else {
+            return nil
+        }
+        if let data = rw.classROData(in: machO) {
+            return data
+        }
+        if let ext = rw.ext(in: machO),
+           let data = ext.classROData(in: machO) {
+            return data
+        }
+        return nil
     }
 }
 
@@ -70,6 +83,50 @@ extension ObjCClass64 {
     public func classROData(in machO: MachOImage) -> ClassROData? {
         if hasRWPointer(in: machO) { return nil }
         return _classROData(in: machO)
+    }
+
+    private func hasRWPointer(in machO: MachOFile) -> Bool {
+        if FAST_IS_RW_POINTER_64 != 0 {
+            return numericCast(layout.dataVMAddrAndFastFlags) & FAST_IS_RW_POINTER_64 != 0
+        }
+        guard let data = _classROData(in: machO) else {
+            return false
+        }
+        return data.isRealized
+    }
+
+    public func classRWData(in machO: MachOFile) -> ClassRWData? {
+        guard hasRWPointer(in: machO) else { return nil }
+
+        let FAST_DATA_MASK: UInt64
+        if machO.isPhysicalIPhone && !machO.isSimulatorIPhone {
+            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64_IPHONE)
+        } else {
+            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64)
+        }
+
+        var unresolved = unresolvedValue(of: .dataVMAddrAndFastFlags)
+        unresolved.value &= FAST_DATA_MASK
+        var resolved = machO.resolveRebase(unresolved)
+        resolved.address &= FAST_DATA_MASK
+
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
+            return nil
+        }
+
+        let offset: Int = if let cache = machO.cache {
+            numericCast(resolved.address - cache.mainCacheHeader.sharedRegionStart)
+        } else {
+            numericCast(machO.fileOffset(of: resolved.address)!)
+        }
+
+        let layout: ClassRWData.Layout = fileHandle.read(offset: fileOffset)
+        let classData = ClassRWData(
+            layout: layout,
+            offset: offset
+        )
+
+        return classData
     }
 
     public func classRWData(in machO: MachOImage) -> ClassRWData? {
