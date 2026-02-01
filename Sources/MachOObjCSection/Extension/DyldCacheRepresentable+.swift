@@ -12,10 +12,15 @@ import MachOKit
 extension DyldCacheRepresentable {
     var relativeMethodSelectorBaseAddressOffset: UInt64? {
         if let objcOpt = objcOptimization {
-            return objcOpt.relativeMethodSelectorBaseAddressOffset
+            return numericCast(objcOpt.layout.relativeMethodSelectorBaseAddressOffset)
         }
         if let oldOpt = oldObjcOptimization {
-            return numericCast(oldOpt.relativeMethodSelectorBaseAddressOffset) + numericCast(oldOpt.offset)
+            switch oldOpt {
+            case .v16(let optimization):
+                return numericCast(optimization.layout.relativeMethodSelectorBaseAddressOffset) + numericCast(optimization.offset)
+            default:
+                return nil
+            }
         }
         return nil
     }

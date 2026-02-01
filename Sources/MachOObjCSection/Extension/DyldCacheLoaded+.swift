@@ -135,14 +135,16 @@ extension DyldCacheLoaded {
     private func computeMachO(at index: Int) -> MachOImage? {
         if let ro = headerOptimizationRO64,
            ro.contains(index: index) {
-            guard let header = ro.headerInfo(at: index, in: self) else {
+            let headers = ro.headerInfos(in: self)
+            guard let header = headers.first(where: { $0.index == index }) else {
                 return nil
             }
             return header.machO(in: self)
         }
         if let ro = headerOptimizationRO32,
            ro.contains(index: index) {
-            guard let header = ro.headerInfo(at: index, in: self) else {
+            let headers = ro.headerInfos(in: self)
+            guard let header = headers.first(where: { $0.index == index }) else {
                 return nil
             }
             return header.machO(in: self)
