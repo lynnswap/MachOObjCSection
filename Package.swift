@@ -60,8 +60,8 @@ let package = Package(
                 isEnabled: true
             ),
             remote: .package(
-                url: "https://github.com/MxIris-Reverse-Engineering/MachOKit.git",
-                branch: "main"
+                url: "https://github.com/lynnswap/MachOKit.git",
+                from: "0.45.1"
             )
         ),
         .package(
@@ -71,8 +71,8 @@ let package = Package(
                 isEnabled: true
             ),
             remote: .package(
-                url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump.git",
-                branch: "main"
+                url: "https://github.com/lynnswap/swift-objc-dump.git",
+                from: "0.8.2"
             )
         ),
         .package(
