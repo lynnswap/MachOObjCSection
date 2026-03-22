@@ -19,6 +19,10 @@ final class ObjCPointerListResolverTests: XCTestCase {
             resolveSelfBind: { _, _ in
                 XCTFail("self bind resolution should not be used when rebase succeeds")
                 return nil
+            },
+            resolveRaw: { _ in
+                XCTFail("raw resolution should not be used when rebase succeeds")
+                return nil
             }
         )
 
@@ -43,6 +47,10 @@ final class ObjCPointerListResolverTests: XCTestCase {
                 XCTAssertEqual(symbolName, "_OBJC_CLASS_$_Resolved")
                 XCTAssertEqual(addend, 0x10)
                 return .init(address: 0x500, offset: 0x500)
+            },
+            resolveRaw: { _ in
+                XCTFail("raw resolution should not be used when bind succeeds")
+                return nil
             }
         )
 
@@ -62,6 +70,10 @@ final class ObjCPointerListResolverTests: XCTestCase {
             },
             resolveSelfBind: { _, _ in
                 XCTFail("external binds must not resolve as self-image symbols")
+                return nil
+            },
+            resolveRaw: { _ in
+                XCTFail("external binds must not fall back to raw pointers")
                 return nil
             }
         )
@@ -83,7 +95,11 @@ final class ObjCPointerListResolverTests: XCTestCase {
                     addend: 0
                 )
             },
-            resolveSelfBind: { _, _ in nil }
+            resolveSelfBind: { _, _ in nil },
+            resolveRaw: { _ in
+                XCTFail("failed self binds must not fall back to raw pointers")
+                return nil
+            }
         )
 
         guard case let .unresolvedBind(symbolName) = result else {

@@ -27,13 +27,17 @@ enum ObjCPointerListResolver {
         unresolved: UnresolvedValue,
         resolveRebase: (UnresolvedValue) -> ResolvedValue?,
         resolveBind: (Int) -> ObjCPointerListBindTarget?,
-        resolveSelfBind: (String, UInt64) -> ResolvedValue?
+        resolveSelfBind: (String, UInt64) -> ResolvedValue?,
+        resolveRaw: (UnresolvedValue) -> ResolvedValue?
     ) -> ObjCPointerListResolveResult {
         if let resolved = resolveRebase(unresolved) {
             return .resolved(resolved)
         }
 
         guard let bind = resolveBind(unresolved.fieldOffset) else {
+            if let resolved = resolveRaw(unresolved) {
+                return .resolved(resolved)
+            }
             return .unresolved
         }
 
@@ -105,6 +109,9 @@ extension MachOFile {
                     symbolName: symbolName,
                     addend: addend
                 )
+            },
+            resolveRaw: { unresolved in
+                self.resolveObjCRawPointerTarget(unresolved.value)
             }
         )
     }
@@ -135,7 +142,24 @@ extension MachOFile {
             return .init(address: address, offset: targetOffset)
         }
 
-        return .init(address: targetOffset, offset: targetOffset)
+        let fileOffset = fileOffset(of: targetOffset) ?? targetOffset
+        return .init(address: targetOffset, offset: fileOffset)
+    }
+
+    func resolveObjCRawPointerTarget(
+        _ rawValue: UInt64
+    ) -> ResolvedValue? {
+        if let (resolvedCache, _) = cacheAndFileOffset(for: rawValue) {
+            return .init(
+                address: rawValue,
+                offset: rawValue - resolvedCache.mainCacheHeader.sharedRegionStart
+            )
+        }
+
+        guard let offset = fileOffset(of: rawValue) else {
+            return nil
+        }
+        return .init(address: rawValue, offset: offset)
     }
 
     func readObjCLayout<Layout>(
