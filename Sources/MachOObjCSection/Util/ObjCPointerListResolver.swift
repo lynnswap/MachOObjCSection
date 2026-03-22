@@ -149,11 +149,25 @@ extension MachOFile {
     func resolveObjCRawPointerTarget(
         _ rawValue: UInt64
     ) -> ResolvedValue? {
+        guard rawValue != 0 else {
+            return nil
+        }
+
         if let (resolvedCache, _) = cacheAndFileOffset(for: rawValue) {
             return .init(
                 address: rawValue,
                 offset: rawValue - resolvedCache.mainCacheHeader.sharedRegionStart
             )
+        }
+
+        if let text64 = loadCommands.text64,
+           text64.vmaddr > 0,
+           rawValue < text64.vmaddr {
+            return nil
+        } else if let text = loadCommands.text,
+                  text.vmaddr > 0,
+                  rawValue < numericCast(text.vmaddr) {
+            return nil
         }
 
         guard let offset = fileOffset(of: rawValue) else {

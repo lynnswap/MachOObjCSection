@@ -108,6 +108,26 @@ final class ObjCPointerListResolverTests: XCTestCase {
         XCTAssertEqual(symbolName, "_OBJC_CLASS_$_Missing")
     }
 
+    func testResolveDoesNotUseZeroRawFallback() {
+        let result = ObjCPointerListResolver.resolve(
+            unresolved: .init(fieldOffset: 0x20, value: 0),
+            resolveRebase: { _ in nil },
+            resolveBind: { _ in nil },
+            resolveSelfBind: { _, _ in
+                XCTFail("self bind should not be called without bind metadata")
+                return nil
+            },
+            resolveRaw: { unresolved in
+                XCTAssertEqual(unresolved.value, 0)
+                return nil
+            }
+        )
+
+        guard case .unresolved = result else {
+            return XCTFail("expected unresolved")
+        }
+    }
+
     private func assertResolved(
         _ result: ObjCPointerListResolveResult,
         address: UInt64,
