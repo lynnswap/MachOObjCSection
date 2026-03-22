@@ -155,15 +155,19 @@ extension MachOFile {
         if let resolved = resolveOptionalRebase(
             at: offset
         ) {
+            let resolvedOffset = fileOffset(of: resolved)
+                ?? numericCast(unresolvedValue.fieldOffset)
             return .init(
                 address: resolved,
-                offset: fileOffset(of: resolved)!
+                offset: resolvedOffset
             )
         }
 
+        let fallbackOffset = fileOffset(of: unresolvedValue.value)
+            ?? numericCast(unresolvedValue.fieldOffset)
         return .init(
             address: unresolvedValue.value,
-            offset: fileOffset(of: unresolvedValue.value)!
+            offset: fallbackOffset
         )
     }
 }

@@ -148,7 +148,7 @@ extension ObjCClass32 {
         let offset: Int = if let cache = machO.cache {
             numericCast(resolved.address - cache.mainCacheHeader.sharedRegionStart)
         } else {
-            numericCast(machO.fileOffset(of: resolved.address)!)
+            numericCast(resolved.offset)
         }
 
         let layout: ClassROData.Layout = fileHandle.read(offset: fileOffset)
