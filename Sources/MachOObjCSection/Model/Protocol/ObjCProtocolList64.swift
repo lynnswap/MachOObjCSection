@@ -33,53 +33,6 @@ extension ObjCProtocolList64 {
     public func protocols(
         in machO: MachOFile
     ) -> [(MachOFile, ObjCProtocol)]? {
-        guard !isListOfLists else {
-            assertionFailure()
-            return nil
-        }
-
-        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: numericCast(offset)) else {
-            return nil
-        }
-
-        let sequnece: DataSequence<UInt64> = fileHandle
-            .readDataSequence(
-                offset: fileOffset + numericCast(MemoryLayout<Header>.size),
-                numberOfElements: numericCast(header.count)
-            )
-
-        return sequnece.enumerated()
-            .map { i, value in
-                UnresolvedValue(
-                    fieldOffset: offset
-                    + MemoryLayout<Header>.size
-                    + MemoryLayout<UInt64>.stride * i,
-                    value: value
-                )
-            }
-            .compactMap { unresolved in
-                let resolved = machO.resolveRebase(unresolved)
-
-                guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
-                    return nil
-                }
-
-                var targetMachO = machO
-                if !targetMachO.contains(unslidAddress: resolved.address),
-                   let cache = machO.cache(for: resolved.address),
-                   let machO = cache.machO(containing: resolved.address) {
-                    targetMachO = machO
-                }
-
-                let layout: ObjCProtocol64.Layout = fileHandle.read(
-                    offset:  numericCast(fileOffset),
-                    swapHandler: { _ in }
-                )
-                let `protocol`: ObjCProtocol = .init(
-                    layout: layout,
-                    offset: numericCast(resolved.offset)
-                )
-                return (targetMachO, `protocol`)
-            }
+        _readProtocols(in: machO, pointerType: UInt64.self)
     }
 }

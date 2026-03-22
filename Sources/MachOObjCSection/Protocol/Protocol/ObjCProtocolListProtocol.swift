@@ -74,3 +74,51 @@ extension ObjCProtocolListProtocol {
             }
     }
 }
+
+extension ObjCProtocolListProtocol {
+    func _readProtocols<Pointer: FixedWidthInteger>(
+        in machO: MachOFile,
+        pointerType _: Pointer.Type
+    ) -> [(MachOFile, ObjCProtocol)]? {
+        guard !isListOfLists else {
+            assertionFailure()
+            return nil
+        }
+
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
+            forOffset: numericCast(offset)
+        ) else {
+            return nil
+        }
+
+        let sequence: DataSequence<Pointer> = fileHandle.readDataSequence(
+            offset: fileOffset + numericCast(MemoryLayout<Header>.size),
+            numberOfElements: numericCast(header.count)
+        )
+
+        return sequence.enumerated().compactMap { index, value in
+            let unresolved = UnresolvedValue(
+                fieldOffset: offset
+                    + MemoryLayout<Header>.size
+                    + MemoryLayout<Pointer>.stride * index,
+                value: numericCast(value)
+            )
+
+            guard case let .resolved(resolved) = machO.resolveObjCPointerListTarget(
+                unresolved
+            ),
+            let result = machO.readObjCLayout(
+                at: resolved,
+                as: ObjCProtocol.Layout.self
+            ) else {
+                return nil
+            }
+
+            let `protocol` = ObjCProtocol(
+                layout: result.1,
+                offset: numericCast(resolved.offset)
+            )
+            return (result.0, `protocol`)
+        }
+    }
+}
