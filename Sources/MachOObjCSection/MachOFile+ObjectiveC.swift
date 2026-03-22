@@ -266,13 +266,15 @@ extension MachOFile.ObjectiveC {
 }
 
 extension MachOFile.ObjectiveC {
-    func _readCategories<
-        Categgory: ObjCCategoryProtocol
+    private func _readPointerSection<
+        Pointer: FixedWidthInteger,
+        Element
     >(
         from section: any SectionProtocol,
         in machO: MachOFile,
-        isCatlist2: Bool = false
-    ) -> [Categgory]? {
+        pointerType _: Pointer.Type,
+        transform: (ResolvedValue) -> Element?
+    ) -> [Element]? {
         guard let fileSlice = machO._fileSliceForSection(section: section) else {
             return nil
         }
@@ -281,43 +283,59 @@ extension MachOFile.ObjectiveC {
             length: section.size
         )
 
-        let offset: UInt64 = if let cache = machO.cache {
+        let baseOffset: UInt64 = if let cache = machO.cache {
             numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
         } else {
             numericCast(section.offset)
         }
 
-        typealias Pointer = Categgory.Layout.Pointer
-        let pointerSize: Int = MemoryLayout<Pointer>.size
-        let sequnece: DataSequence<Pointer> = .init(
+        let pointerSize = MemoryLayout<Pointer>.size
+        let sequence: DataSequence<Pointer> = .init(
             data: data,
             numberOfElements: section.size / pointerSize
         )
 
-        return sequnece.enumerated()
-            .map { i, value in
-                UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
-                    value: numericCast(value)
-                )
-            }
-            .compactMap { unresolved in
-                let resolved = machO.resolveRebase(unresolved)
+        return sequence.enumerated().compactMap { index, value in
+            let unresolved = UnresolvedValue(
+                fieldOffset: numericCast(baseOffset) + pointerSize * index,
+                value: numericCast(value)
+            )
 
-                guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
-                    return nil
-                }
-
-                let layout: Categgory.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
-                return .init(
-                    layout: layout,
-                    offset: numericCast(resolved.offset),
-                    isCatlist2: isCatlist2
-                )
+            guard case let .resolved(resolved) = machO.resolveObjCPointerListTarget(
+                unresolved
+            ) else {
+                return nil
             }
+
+            return transform(resolved)
+        }
+    }
+
+    func _readCategories<
+        Categgory: ObjCCategoryProtocol
+    >(
+        from section: any SectionProtocol,
+        in machO: MachOFile,
+        isCatlist2: Bool = false
+    ) -> [Categgory]? {
+        _readPointerSection(
+            from: section,
+            in: machO,
+            pointerType: Categgory.Layout.Pointer.self
+        ) { resolved in
+            guard let result = machO.readObjCLayout(
+                at: resolved,
+                as: Categgory.Layout.self
+            ) else {
+                return nil
+            }
+
+            return .init(
+                layout: result.1,
+                offset: numericCast(resolved.offset),
+                isCatlist2: isCatlist2
+            )
+        }
     }
 
     func _readClasses<
@@ -326,50 +344,23 @@ extension MachOFile.ObjectiveC {
         from section: any SectionProtocol,
         in machO: MachOFile
     ) -> [Class]? {
-        guard let fileSlice = machO._fileSliceForSection(section: section) else {
-            return nil
-        }
-        let data = try! fileSlice.readData(
-            offset: 0,
-            length: section.size
-        )
-
-        let offset: UInt64 = if let cache = machO.cache {
-            numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
-        } else {
-            numericCast(section.offset)
-        }
-
-        typealias Pointer = Class.Layout.Pointer
-        let pointerSize: Int = MemoryLayout<Pointer>.size
-        let sequnece: DataSequence<Pointer> = .init(
-            data: data,
-            numberOfElements: section.size / pointerSize
-        )
-
-        return sequnece.enumerated()
-            .map { i, value in
-                UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
-                    value: numericCast(value)
-                )
+        _readPointerSection(
+            from: section,
+            in: machO,
+            pointerType: Class.Layout.Pointer.self
+        ) { resolved in
+            guard let result = machO.readObjCLayout(
+                at: resolved,
+                as: Class.Layout.self
+            ) else {
+                return nil
             }
-            .compactMap { unresolved in
-                let resolved = machO.resolveRebase(unresolved)
 
-                guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
-                    return nil
-                }
-
-                let layout: Class.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
-                return .init(
-                    layout: layout,
-                    offset: numericCast(resolved.offset)
-                )
-            }
+            return .init(
+                layout: result.1,
+                offset: numericCast(resolved.offset)
+            )
+        }
     }
 
     func _readProtocols<
@@ -378,50 +369,23 @@ extension MachOFile.ObjectiveC {
         from section: any SectionProtocol,
         in machO: MachOFile
     ) -> [Protocol]? {
-        guard let fileSlice = machO._fileSliceForSection(section: section) else {
-            return nil
-        }
-        let data = try! fileSlice.readData(
-            offset: 0,
-            length: section.size
-        )
-
-        let offset: UInt64 = if let cache = machO.cache {
-            numericCast(section.address) - cache.mainCacheHeader.sharedRegionStart
-        } else {
-            numericCast(section.offset)
-        }
-
-        typealias Pointer = Protocol.Layout.Pointer
-        let pointerSize: Int = MemoryLayout<Pointer>.size
-        let sequnece: DataSequence<Pointer> = .init(
-            data: data,
-            numberOfElements: section.size / pointerSize
-        )
-
-        return sequnece.enumerated()
-            .map { i, value in
-                UnresolvedValue(
-                    fieldOffset: numericCast(offset)
-                    + pointerSize * i,
-                    value: numericCast(value)
-                )
+        _readPointerSection(
+            from: section,
+            in: machO,
+            pointerType: Protocol.Layout.Pointer.self
+        ) { resolved in
+            guard let result = machO.readObjCLayout(
+                at: resolved,
+                as: Protocol.Layout.self
+            ) else {
+                return nil
             }
-            .compactMap { unresolved in
-                let resolved = machO.resolveRebase(unresolved)
 
-                guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
-                    return nil
-                }
-
-                let layout: Protocol.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
-                return .init(
-                    layout: layout,
-                    offset: numericCast(resolved.offset)
-                )
-            }
+            return .init(
+                layout: result.1,
+                offset: numericCast(resolved.offset)
+            )
+        }
     }
 }
 
