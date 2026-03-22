@@ -17,7 +17,7 @@ let package = Package(
         )
     ],
     dependencies: [
-        .package(url: "https://github.com/p-x9/MachOKit.git", from: "0.46.1"),
+        .package(url: "https://github.com/lynnswap/MachOKit.git", from: "0.47.0"),
         .package(url: "https://github.com/p-x9/swift-fileio.git", from: "0.9.0"),
         .package(url: "https://github.com/p-x9/swift-objc-dump.git", from: "0.7.0")
     ],
