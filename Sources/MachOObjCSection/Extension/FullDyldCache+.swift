@@ -14,23 +14,32 @@ internal import FileIO
 @_implementationOnly import FileIO
 #endif
 
+extension FileHandleHolder<FullDyldCache, FullDyldCache.File> {
+    fileprivate static let shared: FileHandleHolder<Owner, File> = .init()
+}
+
 extension FullDyldCache {
     internal typealias File = ConcatenatedMemoryMappedFile
 
     var fileHandle: File {
-        let mainCache = try! DyldCache(url: url)
+        FileHandleHolder.shared.fileHandle(
+            for: self,
+            initialize: {
+                let mainCache = try! DyldCache(url: url)
 
-        let subCacheSuffixes = mainCache.subCaches?.map {
-            $0.fileSuffix
-        } ?? []
-        var urls = [url]
-        urls += subCacheSuffixes.map {
-            URL(fileURLWithPath: url.path + $0)
-        }
+                let subCacheSuffixes = mainCache.subCaches?.map {
+                    $0.fileSuffix
+                } ?? []
+                var urls = [url]
+                urls += subCacheSuffixes.map {
+                    URL(fileURLWithPath: url.path + $0)
+                }
 
-        return try! .open(
-            urls: urls,
-            isWritable: false
+                return try! .open(
+                    urls: urls,
+                    isWritable: false
+                )
+            }
         )
     }
 }

@@ -27,7 +27,8 @@ public struct ObjCMethod {
 extension ObjCMethod {
     public enum Kind: UInt32 {
         case pointer
-        case relativeDirect
+        case relativeDirectSelectors
+        case relativeDirectSelectorsAndTypes
         case relativeIndirect
     }
 }
@@ -97,7 +98,11 @@ extension ObjCMethod {
         public let imp: RelativeDirectPointer<OpaquePointer>
     }
 
-    init(_ relativeDirect: RelativeDirect, at pointer: UnsafeRawPointer) {
+    init(
+        _ relativeDirect: RelativeDirect,
+        at pointer: UnsafeRawPointer,
+        isRelativeDirectType: Bool
+    ) {
 #if !canImport(ObjectiveC)
         guard let cache: DyldCacheLoaded = .current else {
             fatalError("Unsupported Platform")
@@ -112,6 +117,12 @@ extension ObjCMethod {
         )
 #endif
 
+        let typeBase: UnsafeRawPointer = if isRelativeDirectType {
+            base
+        } else {
+            pointer.advanced(by: 4)
+        }
+
         self.init(
             name: .init(
                 cString: relativeDirect.name
@@ -120,7 +131,7 @@ extension ObjCMethod {
             ),
             types: .init(
                 cString: relativeDirect.types
-                    .address(from: pointer.advanced(by: 4))
+                    .address(from: typeBase)
                     .assumingMemoryBound(to: CChar.self)
             ),
             imp: numericCast(

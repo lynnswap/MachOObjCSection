@@ -14,13 +14,24 @@ internal import FileIO
 @_implementationOnly import FileIO
 #endif
 
+extension FileHandleHolder<DyldCache, DyldCache.File> {
+    fileprivate static let shared: FileHandleHolder<Owner, File> = .init()
+}
+
 extension DyldCache {
     internal typealias File = MemoryMappedFile
 
     var fileHandle: File {
-        try! .open(url: url, isWritable: false)
+        FileHandleHolder.shared.fileHandle(
+            for: self,
+            initialize: {
+                try! .open(url: url, isWritable: false)
+            }
+        )
     }
+}
 
+extension DyldCache {
     var fileStartOffset: UInt64 {
         numericCast(
             header.sharedRegionStart - mainCacheHeader.sharedRegionStart
