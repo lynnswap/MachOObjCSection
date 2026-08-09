@@ -55,7 +55,7 @@ extension ObjCProperty {
     ) -> ObjCPropertyInfo {
        .init(
             name: name,
-            attributesString: attributes,
+            attributes: attributes,
             isClassProperty: isClassProperty
         )
     }
@@ -69,8 +69,7 @@ extension ObjCMethod {
         .init(
             name: name,
             typeEncoding: types,
-            isClassMethod: isClassMethod,
-            imp: imp,
+            isClassMethod: isClassMethod
         )
     }
 }

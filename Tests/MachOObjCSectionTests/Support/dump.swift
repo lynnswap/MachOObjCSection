@@ -31,8 +31,7 @@ func dump(
         let info = ObjCMethodInfo(
             name: m.name,
             typeEncoding: m.types,
-            isClassMethod: isClass,
-            imp: m.imp
+            isClassMethod: isClass
         )
         if info.headerString.contains("unknown") {
             print(" M", info.headerString, info.typeEncoding, info.name)
@@ -52,8 +51,7 @@ func dump(
         let info = ObjCMethodInfo(
             name: m.name,
             typeEncoding: m.types,
-            isClassMethod: isClass,
-            imp: m.imp
+            isClassMethod: isClass
         )
         if info.headerString.contains("unknown") {
             print(" M", info.headerString, info.typeEncoding, info.name)

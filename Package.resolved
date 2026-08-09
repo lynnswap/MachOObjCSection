@@ -1,13 +1,13 @@
 {
-  "originHash" : "ba683bad54390f99267052396079f8637b4f268411b829017f375d628c376d17",
+  "originHash" : "c773b89bf6cd51f61cd4d571762c1c7b6260ad6339c1ae63e5f5e632790d9ebe",
   "pins" : [
     {
-      "identity" : "frameworktoolbox",
+      "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
+      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit",
       "state" : {
-        "revision" : "b82281eb8a6ffcb312941c3d06584182837f4ca9",
-        "version" : "0.7.1"
+        "revision" : "5223d0958aa5aa810e8f77b6c6763f019254a322",
+        "version" : "0.52.100"
       }
     },
     {
@@ -65,12 +65,12 @@
       }
     },
     {
-      "identity" : "swift-syntax",
+      "identity" : "swift-objc-dump",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/swiftlang/swift-syntax.git",
+      "location" : "https://github.com/p-x9/swift-objc-dump",
       "state" : {
-        "revision" : "9de99a78f099e59caf2b2beec65a4c45d54b2081",
-        "version" : "603.0.1"
+        "revision" : "bc906fbfb9bf6e39ea4338288049b2372291e11b",
+        "version" : "0.9.0"
       }
     }
   ],

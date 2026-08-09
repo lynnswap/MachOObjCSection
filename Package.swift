@@ -110,8 +110,8 @@ let package = Package(
                 isRelative: true,
             ),
             remote: .package(
-                url: "https://github.com/MxIris-Reverse-Engineering/swift-objc-dump",
-                from: "0.8.100"
+                url: "https://github.com/p-x9/swift-objc-dump",
+                exact: "0.9.0"
             )
         ),
         .package(
