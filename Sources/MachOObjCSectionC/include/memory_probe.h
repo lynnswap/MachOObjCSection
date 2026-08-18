@@ -22,9 +22,8 @@ extern "C" {
 #endif
 
 /// Returns `true` iff `length` bytes starting at `address` are mapped and
-/// readable in the current task. Uses `mach_vm_read_overwrite` to probe the
-/// first and last page touched by the range, which is enough for the
-/// small (≤ a few pages) structs the ObjC reader pulls.
+/// readable in the current task. Uses `mach_vm_read_overwrite` to probe every
+/// page touched by the range before the Swift side dereferences it.
 bool MachOObjCSectionIsMemoryReadable(const void *address, size_t length);
 
 #ifdef __cplusplus

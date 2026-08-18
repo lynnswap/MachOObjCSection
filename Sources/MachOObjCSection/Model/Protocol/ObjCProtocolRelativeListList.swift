@@ -33,8 +33,15 @@ extension ObjCProtocolRelativeListList64 {
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
+        let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
+        guard !offsetOverflow, offset >= 0 else { return nil }
+        let baseAddress = UInt(bitPattern: machO.ptr)
+        let (address, addressOverflow) = baseAddress.addingReportingOverflow(UInt(offset))
+        guard !addressOverflow, let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
+
+        guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
+            return nil
+        }
 
 #if canImport(MachO)
         guard let cache: DyldCacheLoaded = .current else { return nil }
@@ -52,13 +59,19 @@ extension ObjCProtocolRelativeListList64 {
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        let (relativeOffset, overflow) = entry.offset.addingReportingOverflow(entry.listOffset)
+        guard !overflow, let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
         }
 
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
+        guard let header: List.Header = location.cache.fileHandle.readProtocolLayout(
+            offset: location.fileOffset,
+            as: List.Header.self
+        ) else {
+            return nil
+        }
         let list = List(
             offset: numericCast(offset),
             header: header
@@ -92,8 +105,15 @@ extension ObjCProtocolRelativeListList32 {
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
+        let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
+        guard !offsetOverflow, offset >= 0 else { return nil }
+        let baseAddress = UInt(bitPattern: machO.ptr)
+        let (address, addressOverflow) = baseAddress.addingReportingOverflow(UInt(offset))
+        guard !addressOverflow, let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
+
+        guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
+            return nil
+        }
 
 #if canImport(MachO)
         guard let cache: DyldCacheLoaded = .current else { return nil }
@@ -111,13 +131,19 @@ extension ObjCProtocolRelativeListList32 {
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        let (relativeOffset, overflow) = entry.offset.addingReportingOverflow(entry.listOffset)
+        guard !overflow, let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
         }
 
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
+        guard let header: List.Header = location.cache.fileHandle.readProtocolLayout(
+            offset: location.fileOffset,
+            as: List.Header.self
+        ) else {
+            return nil
+        }
         let list = List(
             offset: numericCast(offset),
             header: header

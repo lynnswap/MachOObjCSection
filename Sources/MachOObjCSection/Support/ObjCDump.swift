@@ -171,9 +171,43 @@ extension ObjCProtocolProtocol {
         in machO: MachOFile,
         options: ObjCProtocolInfoOptions = .recursive
     ) -> ObjCProtocolInfo? {
-        let name = mangledName(in: machO)
+        readInfo(in: machO, options: options).value
+    }
 
-        let protocols = referencedProtocolInfos(in: machO, options: options)
+    /// Decodes this protocol and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCProtocolInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCProtocolInfo> {
+        let name = mangledName(in: machO)
+        var context = ObjCProtocolTraversalContext(
+            subject: .protocol(name: name),
+            rootProtocol: (traversalIdentity(in: machO), name)
+        )
+        let value = _readInfo(
+            in: machO,
+            name: name,
+            options: options,
+            context: &context
+        )
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOFile,
+        name knownName: String? = nil,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCProtocolInfo? {
+        let name = knownName ?? mangledName(in: machO)
+
+        let protocols = referencedProtocolInfos(
+            in: machO,
+            options: options,
+            context: &context
+        )
 
         let classPropertiesList = classPropertyList(in: machO)
         let classProperties = classPropertiesList?
@@ -227,9 +261,44 @@ extension ObjCProtocolProtocol {
         in machO: MachOImage,
         options: ObjCProtocolInfoOptions = .recursive
     ) -> ObjCProtocolInfo? {
-        let name = mangledName(in: machO)
+        readInfo(in: machO, options: options).value
+    }
 
-        let protocols = referencedProtocolInfos(in: machO, options: options)
+    /// Decodes this protocol and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCProtocolInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCProtocolInfo> {
+        let name = mangledName(in: machO)
+        let rootProtocol = traversalIdentity(in: machO).map { ($0, name) }
+        var context = ObjCProtocolTraversalContext(
+            subject: .protocol(name: name),
+            rootProtocol: rootProtocol
+        )
+        let value = _readInfo(
+            in: machO,
+            name: name,
+            options: options,
+            context: &context
+        )
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOImage,
+        name knownName: String? = nil,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCProtocolInfo? {
+        let name = knownName ?? mangledName(in: machO)
+
+        let protocols = referencedProtocolInfos(
+            in: machO,
+            options: options,
+            context: &context
+        )
 
         let classPropertiesList = classPropertyList(in: machO)
         let classProperties = classPropertiesList?
@@ -311,11 +380,28 @@ extension ObjCProtocolProtocol {
 
     fileprivate func referenceInfo(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        identity: ObjCProtocolIdentity,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
+        let name = mangledName(in: machO)
+        switch context.decision(for: identity, name: name) {
+        case .shallowCycle, .shallowLimit:
+            return shallowInfo(in: machO)
+        case .descend:
+            break
+        }
         switch options.referencedProtocolInfo {
         case .full:
-            return info(in: machO, options: options)
+            context.enter(identity: identity, name: name)
+            let info = _readInfo(
+                in: machO,
+                name: name,
+                options: options,
+                context: &context
+            )
+            context.leave(identity: identity)
+            return info
         case .nameOnly:
             return shallowInfo(in: machO)
         }
@@ -323,11 +409,28 @@ extension ObjCProtocolProtocol {
 
     fileprivate func referenceInfo(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        identity: ObjCProtocolIdentity,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
+        let name = mangledName(in: machO)
+        switch context.decision(for: identity, name: name) {
+        case .shallowCycle, .shallowLimit:
+            return shallowInfo(in: machO)
+        case .descend:
+            break
+        }
         switch options.referencedProtocolInfo {
         case .full:
-            return info(in: machO, options: options)
+            context.enter(identity: identity, name: name)
+            let info = _readInfo(
+                in: machO,
+                name: name,
+                options: options,
+                context: &context
+            )
+            context.leave(identity: identity)
+            return info
         case .nameOnly:
             return shallowInfo(in: machO)
         }
@@ -335,62 +438,110 @@ extension ObjCProtocolProtocol {
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
         return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions) ?? []
+            .protocolInfos(in: machO, options: nextOptions, context: &context) ?? []
     }
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
         return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions) ?? []
+            .protocolInfos(in: machO, options: nextOptions, context: &context) ?? []
     }
 }
 
 extension ObjCProtocolListProtocol {
     fileprivate func referencedProtocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolInfos(in: machO, options: nextOptions)
+        return protocolInfos(in: machO, options: nextOptions, context: &context)
     }
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolInfos(in: machO, options: nextOptions)
+        return protocolInfos(in: machO, options: nextOptions, context: &context)
     }
 
     fileprivate func protocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        protocols(in: machO)?
-            .compactMap { $1.referenceInfo(in: $0, options: options) } ?? []
+        switch readProtocols(in: machO) {
+        case .failure(let failure):
+            context.record(tableFailure: failure, listOffset: offset)
+            return []
+        case .success(let success):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in success.entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(entryFailure: failure, listOffset: offset)
+                case .reference(let reference):
+                    if let info = reference.value.referenceInfo(
+                        in: reference.source,
+                        identity: reference.identity,
+                        options: options,
+                        context: &context
+                    ) {
+                        infos.append(info)
+                    }
+                }
+            }
+            return infos
+        }
     }
 
     fileprivate func protocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        protocols(in: machO)?
-            .compactMap { $1.referenceInfo(in: $0, options: options) } ?? []
+        switch readProtocols(in: machO) {
+        case .failure(let failure):
+            context.record(tableFailure: failure, listOffset: offset)
+            return []
+        case .success(let success):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in success.entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(entryFailure: failure, listOffset: offset)
+                case .reference(let reference):
+                    if let info = reference.value.referenceInfo(
+                        in: reference.source,
+                        identity: reference.identity,
+                        options: options,
+                        context: &context
+                    ) {
+                        infos.append(info)
+                    }
+                }
+            }
+            return infos
+        }
     }
 }
 
@@ -399,6 +550,27 @@ extension ObjCClassProtocol {
     public func info(
         in machO: MachOFile,
         options: ObjCInfoOptions = .recursive
+    ) -> ObjCClassInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this class and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCClassInfo> {
+        let subjectName = classROData(in: machO)?.name(in: machO) ?? "<unknown>"
+        var context = ObjCProtocolTraversalContext(subject: .class(name: subjectName))
+        let value = _readInfo(in: machO, options: options, context: &context)
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> ObjCClassInfo? {
         guard let data = classROData(in: machO),
               let (targetMachO, meta) = metaClass(in: machO),
@@ -432,7 +604,8 @@ extension ObjCClassProtocol {
             .map { (m, list) in
                 list.referencedProtocolInfos(
                     in: m,
-                    options: options.protocolInfoOptions
+                    options: options.protocolInfoOptions,
+                    context: &context
                 )
             } ?? []
 
@@ -527,6 +700,28 @@ extension ObjCClassProtocol {
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCClassInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this class and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCClassInfo> {
+        let subjectName = data(in: machO)
+            .flatMap { $0.1.name(in: machO) } ?? "<unknown>"
+        var context = ObjCProtocolTraversalContext(subject: .class(name: subjectName))
+        let value = _readInfo(in: machO, options: options, context: &context)
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCClassInfo? {
         guard let (targetMachO, data, metaData) = data(in: machO) else { return nil }
 
         guard let name = data.name(in: machO) else {
@@ -554,7 +749,8 @@ extension ObjCClassProtocol {
             .map { (m, list) in
                 list.referencedProtocolInfos(
                     in: m,
-                    options: options.protocolInfoOptions
+                    options: options.protocolInfoOptions,
+                    context: &context
                 )
             } ?? []
 
@@ -609,6 +805,30 @@ extension ObjCCategoryProtocol {
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCCategoryInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this category and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCCategoryInfo> {
+        let categoryName = name(in: machO) ?? "<unknown>"
+        let targetClassName = className(in: machO) ?? "<unknown>"
+        var context = ObjCProtocolTraversalContext(
+            subject: .category(className: targetClassName, name: categoryName)
+        )
+        let value = _readInfo(in: machO, options: options, context: &context)
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCCategoryInfo? {
         guard let name = name(in: machO),
               let className = className(in: machO) else {
             return nil
@@ -617,7 +837,8 @@ extension ObjCCategoryProtocol {
         let protocols = protocolList(in: machO)?
             .referencedProtocolInfos(
                 in: machO,
-                options: options.protocolInfoOptions
+                options: options.protocolInfoOptions,
+                context: &context
             ) ?? []
 
         // Instance
@@ -657,6 +878,30 @@ extension ObjCCategoryProtocol {
         in machO: MachOFile,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCCategoryInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this category and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCCategoryInfo> {
+        let categoryName = name(in: machO) ?? "<unknown>"
+        let targetClassName = className(in: machO) ?? "<unknown>"
+        var context = ObjCProtocolTraversalContext(
+            subject: .category(className: targetClassName, name: categoryName)
+        )
+        let value = _readInfo(in: machO, options: options, context: &context)
+        return .init(value: value, diagnostics: context.diagnostics)
+    }
+
+    private func _readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCCategoryInfo? {
         guard let name = name(in: machO),
               let className = className(in: machO) else {
             return nil
@@ -665,7 +910,8 @@ extension ObjCCategoryProtocol {
         let protocols = protocolList(in: machO)?
             .referencedProtocolInfos(
                 in: machO,
-                options: options.protocolInfoOptions
+                options: options.protocolInfoOptions,
+                context: &context
             ) ?? []
 
         // Instance
@@ -737,7 +983,7 @@ fileprivate extension ObjCClassRODataProtocol {
         imageIndex: @autoclosure () -> Int?
     ) -> (MachOFile, ObjCProtocolList)? {
         if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
+           let resolved = relative.safelyReadList(in: machO, forImageIndex: imageIndex()) {
             return resolved
         }
         return protocolList(in: machO).map { (machO, $0) }
@@ -770,7 +1016,7 @@ fileprivate extension ObjCClassRODataProtocol {
         imageIndex: @autoclosure () -> Int?
     ) -> (MachOImage, ObjCProtocolList)? {
         if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
+           let resolved = relative.safelyReadList(in: machO, forImageIndex: imageIndex()) {
             return resolved
         }
         return protocolList(in: machO).map { (machO, $0) }

@@ -68,6 +68,9 @@ extension ObjCProtocolProtocol {
         ) else {
             return nil
         }
+        guard isPointerSafelyReadable(ptr, length: MemoryLayout<ObjCProtocolList.Header>.size) else {
+            return nil
+        }
         return .init(
             ptr: ptr,
             offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
@@ -221,7 +224,12 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let header: ObjCProtocolList.Header = fileHandle.read(offset: fileOffset)
+        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+            offset: fileOffset,
+            as: ObjCProtocolList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCProtocolList(
             offset: numericCast(resolved.offset),
             header: header

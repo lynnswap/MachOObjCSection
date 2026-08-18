@@ -9,6 +9,7 @@
 #include <mach/mach_init.h>
 #include <mach/mach_types.h>
 #include <mach/vm_types.h>
+#include <stdint.h>
 #include <unistd.h>
 
 // `<mach/mach_vm.h>` is publicly marked `unsupported` on the iOS SDK, but
@@ -50,10 +51,22 @@ bool MachOObjCSectionIsMemoryReadable(const void *address, size_t length) {
         return true;
     }
 
-    mach_vm_address_t endAddress = startAddress + (mach_vm_address_t)(length - 1);
+    mach_vm_size_t trailingLength = (mach_vm_size_t)(length - 1);
+    if (trailingLength > UINT64_MAX - startAddress) {
+        return false;
+    }
+    mach_vm_address_t endAddress = startAddress + trailingLength;
     mach_vm_address_t pageSize = (mach_vm_address_t)getpagesize();
-    if (startAddress / pageSize == endAddress / pageSize) {
+    mach_vm_address_t startPage = startAddress / pageSize;
+    mach_vm_address_t endPage = endAddress / pageSize;
+    if (startPage == endPage) {
         return true;
+    }
+
+    for (mach_vm_address_t page = startPage + 1; page < endPage; page++) {
+        if (!probe_byte(page * pageSize)) {
+            return false;
+        }
     }
     return probe_byte(endAddress);
 }

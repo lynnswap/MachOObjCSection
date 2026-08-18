@@ -181,7 +181,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCProtocolList.Header = fileHandle.read(offset: fileOffset)
+        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+            offset: fileOffset,
+            as: ObjCProtocolList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCProtocolList(
             offset: numericCast(resolved.offset),
             header: header
@@ -293,6 +298,9 @@ extension ObjCClassRODataProtocol {
         ) else {
             return nil
         }
+        guard isPointerSafelyReadable(ptr, length: MemoryLayout<ObjCProtocolList.Header>.size) else {
+            return nil
+        }
         let list = ObjCProtocolList(
             ptr: ptr,
             offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
@@ -361,7 +369,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCProtocolRelativeListList.Header = fileHandle.read(offset: fileOffset)
+        guard let header: ObjCProtocolRelativeListList.Header = fileHandle.readProtocolLayout(
+            offset: fileOffset,
+            as: ObjCProtocolRelativeListList.Header.self
+        ) else {
+            return nil
+        }
         let lists = ObjCProtocolRelativeListList(
             offset: numericCast(resolved.offset),
             header: header
@@ -418,6 +431,12 @@ extension ObjCClassRODataProtocol {
         let strippedAddress = machO.stripPointerTags(of: numericCast(layout.baseProtocols))
         guard let ptr = UnsafeRawPointer(
             bitPattern: UInt(strippedAddress) & ~1
+        ) else {
+            return nil
+        }
+        guard isPointerSafelyReadable(
+            ptr,
+            length: MemoryLayout<ObjCProtocolRelativeListList.Header>.size
         ) else {
             return nil
         }

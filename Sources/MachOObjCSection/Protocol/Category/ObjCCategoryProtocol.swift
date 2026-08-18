@@ -470,7 +470,12 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let header: ObjCProtocolList.Header = fileHandle.read(offset: fileOffset)
+        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+            offset: fileOffset,
+            as: ObjCProtocolList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCProtocolList(
             offset: numericCast(resolved.offset),
             header: header
@@ -546,6 +551,9 @@ extension ObjCCategoryProtocol {
         guard let ptr = UnsafeRawPointer(
             bitPattern: strippedAddress
         ) else {
+            return nil
+        }
+        guard isPointerSafelyReadable(ptr, length: MemoryLayout<ObjCProtocolList.Header>.size) else {
             return nil
         }
         let list = ObjCProtocolList(
