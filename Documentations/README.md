@@ -18,6 +18,7 @@ MachOObjCSection 的内部文档。新增或重命名任何文档都必须同步
 | [0003](Evolutions/0003-objc-relationship-tables-return-to-application.md) | ObjC 关系反向表移出索引层，归还应用 | Implemented |
 | [0004](Evolutions/0004-strip-synthesized-setter-selector-fix.md) | 修正 stripSynthesizedMethods 漏剥 setter 的选择器拼写 | Implemented |
 | [0006](Evolutions/0006-safe-objc-protocol-metadata-traversal.md) | 安全读取并有界遍历 Objective-C protocol metadata | In Review |
+| [0007](Evolutions/0007-safe-relative-member-list-resolution.md) | 安全解析 Objective-C relative member list-of-lists | In Review |
 
 ## 实现说明
 

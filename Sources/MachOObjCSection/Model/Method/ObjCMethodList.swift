@@ -29,7 +29,7 @@ extension ObjCMethodList {
         is64Bit: Bool
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
         self.is64Bit = is64Bit
     }
 }
@@ -73,19 +73,34 @@ extension ObjCMethodList {
 }
 
 extension ObjCMethodList {
-    func isValidEntrySize(is64Bit: Bool) -> Bool {
+    func expectedEntrySize(is64Bit: Bool) -> Int {
         switch listKind {
         case .pointer where is64Bit:
-            MemoryLayout<ObjCMethod.Pointer64>.size == entrySize
+            return MemoryLayout<ObjCMethod.Pointer64>.size
         case .pointer:
-            MemoryLayout<ObjCMethod.Pointer32>.size == entrySize
-        case .relativeDirectSelectors:
-            MemoryLayout<ObjCMethod.RelativeDirect>.size == entrySize
-        case .relativeDirectSelectorsAndTypes:
-            MemoryLayout<ObjCMethod.RelativeDirect>.size == entrySize
+            return MemoryLayout<ObjCMethod.Pointer32>.size
+        case .relativeDirectSelectors, .relativeDirectSelectorsAndTypes:
+            return MemoryLayout<ObjCMethod.RelativeDirect>.size
         case .relativeIndirect:
-            MemoryLayout<ObjCMethod.RelativeInDirect>.size == entrySize
+            return MemoryLayout<ObjCMethod.RelativeInDirect>.size
         }
+    }
+
+    func expectedEntryAlignment(is64Bit: Bool) -> Int {
+        switch listKind {
+        case .pointer where is64Bit:
+            return MemoryLayout<ObjCMethod.Pointer64>.alignment
+        case .pointer:
+            return MemoryLayout<ObjCMethod.Pointer32>.alignment
+        case .relativeDirectSelectors, .relativeDirectSelectorsAndTypes:
+            return MemoryLayout<ObjCMethod.RelativeDirect>.alignment
+        case .relativeIndirect:
+            return MemoryLayout<ObjCMethod.RelativeInDirect>.alignment
+        }
+    }
+
+    func isValidEntrySize(is64Bit: Bool) -> Bool {
+        expectedEntrySize(is64Bit: is64Bit) == entrySize
     }
 }
 

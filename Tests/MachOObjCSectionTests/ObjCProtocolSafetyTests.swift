@@ -1154,7 +1154,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
     }
 }
 
-private extension ObjCProtocolListResolution {
+private extension ObjCRelativeListResolution where Failure == ObjCProtocolListResolutionFailure {
     var entriesForTesting: [ObjCProtocolListResolutionEntry<Source, List>] {
         guard case .entries(let entries) = self else { return [] }
         return entries

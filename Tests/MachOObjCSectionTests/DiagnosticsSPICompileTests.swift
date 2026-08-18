@@ -23,3 +23,12 @@ private func consumeDiagnostics<
         + category.readInfo(in: file).diagnostics
         + category.readInfo(in: image).diagnostics
 }
+
+private func consumeMemberListDiagnostics<Class: ObjCClassProtocol>(
+    objcClass: Class,
+    file: MachOFile,
+    image: MachOImage
+) -> [ObjCMemberListDiagnostic] {
+    objcClass.readInfo(in: file).memberListDiagnostics
+        + objcClass.readInfo(in: image).memberListDiagnostics
+}

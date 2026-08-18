@@ -11,16 +11,11 @@ internal struct ObjCProtocolListResolutionFailure: Error, Equatable {
     let failure: ObjCProtocolDiagnostic.UnreadableList.Failure
 }
 
-internal enum ObjCProtocolListResolutionEntry<Source, List> {
-    case resolved(Source, List)
-    case failure(ObjCProtocolListResolutionFailure)
-}
+internal typealias ObjCProtocolListResolutionEntry<Source, List> =
+    ObjCRelativeListResolutionEntry<Source, List, ObjCProtocolListResolutionFailure>
 
-internal enum ObjCProtocolListResolution<Source, List> {
-    case absent
-    case failure(ObjCProtocolListResolutionFailure)
-    case entries([ObjCProtocolListResolutionEntry<Source, List>])
-}
+internal typealias ObjCProtocolListResolution<Source, List> =
+    ObjCRelativeListResolution<Source, List, ObjCProtocolListResolutionFailure>
 
 @inline(__always)
 private func checkedFieldOffset(_ base: Int, _ fieldOffset: Int) -> Int? {

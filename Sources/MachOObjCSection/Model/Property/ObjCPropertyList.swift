@@ -25,7 +25,7 @@ extension ObjCPropertyList {
         is64Bit: Bool
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
         self.is64Bit = is64Bit
     }
 }
@@ -41,12 +41,24 @@ extension ObjCPropertyList {
 }
 
 extension ObjCPropertyList {
-    func isValidEntrySize(is64Bit: Bool) -> Bool {
+    func expectedEntrySize(is64Bit: Bool) -> Int {
         if is64Bit {
-            MemoryLayout<ObjCProperty.Property64>.size == entrySize
+            MemoryLayout<ObjCProperty.Property64>.size
         } else {
-            MemoryLayout<ObjCProperty.Property32>.size == entrySize
+            MemoryLayout<ObjCProperty.Property32>.size
         }
+    }
+
+    func expectedEntryAlignment(is64Bit: Bool) -> Int {
+        if is64Bit {
+            MemoryLayout<ObjCProperty.Property64>.alignment
+        } else {
+            MemoryLayout<ObjCProperty.Property32>.alignment
+        }
+    }
+
+    func isValidEntrySize(is64Bit: Bool) -> Bool {
+        expectedEntrySize(is64Bit: is64Bit) == entrySize
     }
 }
 

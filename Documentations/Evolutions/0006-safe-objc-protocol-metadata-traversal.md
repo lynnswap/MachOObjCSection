@@ -225,3 +225,4 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | Review corrections complete | synthetic safety tests 31 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 66 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |
 | 2026-08-18 | Canonical protocol follow-up | watchOS 27 的 cache-wide canonical protocol pointer 没有 dylib owner。direct-name policy 通过 exact runtime registry identity 恢复 raw mangled name；full reads 和 unknown pointers 继续产生 bounded diagnostic。 |
 | 2026-08-19 | Relative list-of-lists follow-up | 按 objc4 iterator contract 改为 file 全 entry、loaded image 仅 loaded entry 的有序 plural resolution；owner index 不再是 protocol reader 输入，单 entry failure 不丢后续 sibling。 |
+| 2026-08-19 | Member-list successor | method/property 的同型 owner-index 缺陷与 additive diagnostics 契约由 [0007](0007-safe-relative-member-list-resolution.md) 接续；0006 的 protocol payload 与 consumer contract 保持不变。 |

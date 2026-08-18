@@ -5,10 +5,10 @@
 
 import Foundation
 
-/// A decoded Objective-C metadata value together with recoverable protocol diagnostics.
+/// A decoded Objective-C metadata value together with recoverable diagnostics.
 ///
 /// This SPI is intended for analysis tools that must distinguish absent metadata from
-/// malformed protocol references. It has no ABI stability guarantee.
+/// malformed protocol references or class member lists. It has no ABI stability guarantee.
 @_spi(Diagnostics)
 public struct ObjCMetadataReadResult<Value> {
     /// The decoded value, or `nil` when the subject itself could not be decoded.
@@ -17,12 +17,85 @@ public struct ObjCMetadataReadResult<Value> {
     /// Recoverable protocol failures in deterministic discovery order.
     public let diagnostics: [ObjCProtocolDiagnostic]
 
+    /// Recoverable class method/property list failures in deterministic discovery order.
+    public let memberListDiagnostics: [ObjCMemberListDiagnostic]
+
     internal init(
         value: Value?,
-        diagnostics: [ObjCProtocolDiagnostic]
+        diagnostics: [ObjCProtocolDiagnostic],
+        memberListDiagnostics: [ObjCMemberListDiagnostic] = []
     ) {
         self.value = value
         self.diagnostics = diagnostics
+        self.memberListDiagnostics = memberListDiagnostics
+    }
+}
+
+/// A recoverable failure while reading one class method/property list-of-lists.
+@_spi(Diagnostics)
+public struct ObjCMemberListDiagnostic: Sendable, Equatable {
+    /// The class whose instance or metaclass metadata owns the list.
+    public let className: String
+
+    /// The member group whose metadata was degraded.
+    public let kind: Kind
+
+    /// The outer relative list-of-lists offset in the source's native convention.
+    public let outerListOffset: Int
+
+    /// Whether the failure belongs to the whole outer table or one entry.
+    public let location: Location
+
+    /// The precise structural read failure.
+    public let failure: Failure
+
+    internal init(
+        className: String,
+        kind: Kind,
+        outerListOffset: Int,
+        location: Location,
+        failure: Failure
+    ) {
+        self.className = className
+        self.kind = kind
+        self.outerListOffset = outerListOffset
+        self.location = location
+        self.failure = failure
+    }
+
+    public enum Kind: Sendable, Equatable {
+        case instanceMethod
+        case classMethod
+        case instanceProperty
+        case classProperty
+    }
+
+    public enum Location: Sendable, Equatable {
+        case table
+        case entry(index: Int, imageIndex: Int, offset: Int)
+    }
+
+    public enum Failure: Sendable, Equatable {
+        case unsupportedListEncoding
+        case invalidListOffset(Int)
+        case invalidElementCount(UInt64)
+        case invalidSignedElementCount(Int)
+        case excessiveElementCount(actual: Int, maximum: Int)
+        case excessiveByteCount(actual: Int, maximum: Int)
+        case invalidRelativeEntrySize(advertised: UInt32, minimum: Int)
+        case invalidListEntrySize(advertised: Int, expected: Int)
+        case misalignedListOffset(offset: Int, requiredAlignment: Int)
+        case misalignedListAddress(address: UInt, requiredAlignment: Int)
+        case unresolvedListPointer
+        case missingListBackingData
+        case unreadableFileHeader(offset: UInt64, byteCount: Int)
+        case unreadableImageHeader(address: UInt, byteCount: Int)
+        case invalidRelativeListLocation
+        case relativeImageUnavailable(imageIndex: Int)
+        case byteCountOverflow(elementCount: Int, elementSize: Int)
+        case rangeOverflow(startOffset: UInt64, byteCount: Int)
+        case unreadableFileRange(offset: UInt64, byteCount: Int)
+        case unreadableImageRange(address: UInt, byteCount: Int)
     }
 }
 

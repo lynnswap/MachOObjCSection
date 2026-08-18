@@ -25,6 +25,7 @@ internal struct ObjCProtocolTraversalContext {
     private var activeIdentities: Set<ObjCProtocolIdentity>
     private(set) var edgeDepth: Int
     private(set) var diagnostics: [ObjCProtocolDiagnostic] = []
+    private(set) var memberListDiagnostics: [ObjCMemberListDiagnostic] = []
 
     init(
         subject: ObjCProtocolDiagnostic.Subject,
@@ -115,6 +116,22 @@ internal struct ObjCProtocolTraversalContext {
                     listOffset: resolutionFailure.listOffset,
                     failure: resolutionFailure.failure
                 )
+            )
+        )
+    }
+
+    mutating func record(
+        memberListFailure: ObjCRelativeListFailure,
+        className: String,
+        kind: ObjCMemberListDiagnostic.Kind
+    ) {
+        memberListDiagnostics.append(
+            .init(
+                className: className,
+                kind: kind,
+                outerListOffset: memberListFailure.outerListOffset,
+                location: memberListFailure.location.memberDiagnosticLocation,
+                failure: memberListFailure.reason.memberDiagnosticFailure
             )
         )
     }
