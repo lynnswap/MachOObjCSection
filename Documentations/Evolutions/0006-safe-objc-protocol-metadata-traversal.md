@@ -56,6 +56,7 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
     case unreadableList(UnreadableList)
     case cycle(Cycle)
     case recursionLimit(RecursionLimit)
+    case invalidIdentity(InvalidIdentity)
 }
 
 // ObjCClassProtocol / ObjCProtocolProtocol / ObjCCategoryProtocol each expose:
@@ -87,14 +88,15 @@ SPI 不承诺 ABI。普通 source consumer 不导入 SPI，现有 `info(...)` �
 按以下顺序验证，任何一步失败都不分配 pointer array、不做读取，并返回 unreadable-list diagnostic：
 
 1. raw `UInt32` / `UInt64` count 必须能 exact 转成 `Int`；
-2. `count * pointerSize` 使用 checked multiplication；
+2. `count * advertisedStride` 使用 checked multiplication；
 3. list offset、header size、table bytes 的加法不得 overflow；
 4. file mode 必须完全落在 backing file range；image mode 必须是当前 task 可读 range。
 
-loaded image 另有独立资源预算：一张 regular/relative protocol pointer table 最多 **65,536
-entries**。64-bit 下是 512 KiB、按 4 KiB page 计算最多触及 129 页；即使攻击者准备了一段很大的
-全可读 mapping，count 也不能把 page probe、allocation 和遍历工作放大到 task-wide 尺度。这个 cap
-在 probe 与 `reserveCapacity` 之前执行，并以 typed excessive-count diagnostic 报告。
+所有 file/image、regular/relative protocol table 共用两项资源预算：最多 **65,536 entries**，且
+完整 strided table 最多 **512 KiB**。regular 64-bit table 在两项上限处恰好是 512 KiB；relative
+table 即使只有一个 entry，也不能用接近 4 GiB 的 advertised stride 绕过预算。两个 cap 都在 file
+read、image probe、allocation 与 `reserveCapacity` 之前执行，并分别以 typed excessive-count /
+excessive-byte-count diagnostic 报告。按 4 KiB page 计算，单表最多触及 129 页。
 
 ### 单 entry 验证
 
@@ -147,8 +149,12 @@ hard limit 对所有 traversal 生效，包括 `.recursive` 和 `.depth(n)` 中 
 diagnostics 与 metadata walk 同序，且每次根调用从空数组开始。payload 不以一组互相制约的 optional
 字段表达状态，而用关联值区分：
 
-- whole-table invalid count / overflow / unreadable range；
-- skipped entry 的 unresolved rebase / missing backing data / unreadable layout；
+- whole-table invalid/excessive count、invalid/excessive stride bytes、multiplication/range overflow、
+  unreadable file/image range；
+- regular/relative list header unreadable、relative image/index/location resolution failure；
+- skipped entry 的 unresolved rebase / invalid offset or pointer / invalid identity / missing backing data /
+  unreadable layout；
+- root protocol 的 canonical traversal identity 无法建立；
 - cycle path；
 - recursion-limit path 与固定 limit。
 
@@ -168,14 +174,16 @@ logger，也不把 handler 塞进 `Sendable` options。
 
 仓库内回归使用合成 bytes / graph，不依赖 host system framework，覆盖：
 
-1. 32/64 count exact conversion、byte multiplication/address addition overflow、OOB table；
+1. 32/64 count exact conversion、signed 48-bit relative displacement、byte multiplication/address
+   addition overflow、OOB table；
 2. 一条坏 entry 与一条好 entry 同表时保留好 entry，并记录坏 index；
 3. class/protocol/category root subject；
 4. self-cycle、`A -> B -> A`、diamond DAG、cross-root reset；
 5. 第 65 条边 shallow + 单条 limit diagnostic；
 6. `.depth(1)` 保留 direct names 且无 limit diagnostic；
 7. 旧 `info` wrapper 不 trap；
-8. MachOFile / MachOImage 两条路径。
+8. file/image 与 regular/relative 四条路径的 entry/byte resource budget；
+9. MachOFile / MachOImage 两条路径。
 
 ## 决策日志
 
@@ -186,6 +194,6 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | 选择 path-scoped set，不选 global visited | global set 会把 diamond DAG 的第二条合法路径误判成重复并静默删掉 |
 | 2026-08-18 | diagnostics 采用值结果 SPI | options handler 会改变 Sendable configuration 的职责；library stderr 会夺走 consumer 的日志策略 |
 | 2026-08-18 | image range probe 改为检查每个 touched page | first/last 不能证明中间页可读；逐 entry probe 又会在 48,743-node scan 上放大 syscall 数 |
-| 2026-08-18 | loaded table resource budget 取 65,536 entries | 64-bit 为 512 KiB / 最多 129 个 4 KiB pages；mapped-range 大小不再决定 parser 愿意承担的工作量 |
+| 2026-08-18 | 全 protocol table resource budget 取 65,536 entries / 512 KiB | 同时约束 count 与 advertised stride；mapped/file-range 大小不再决定 parser 愿意承担的工作量 |
 | 2026-08-18 | In Review | fork branch 已实现并进入 review；只有合并后才能按本仓库定义改为 Implemented。最终 test/build 实绩在 review 修正收敛后更新 |
-| 2026-08-18 | Review corrections complete | synthetic safety tests 28 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 63 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |
+| 2026-08-18 | Review corrections complete | synthetic safety tests 31 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 66 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |

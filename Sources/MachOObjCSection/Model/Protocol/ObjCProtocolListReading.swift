@@ -18,10 +18,34 @@ internal enum ObjCProtocolIdentity: Hashable {
 }
 
 internal enum ObjCProtocolReadLimits {
-    /// At 64-bit pointer width this admits a 512 KiB table spanning at most 129
-    /// 4 KiB pages, while preventing task-wide readable mappings from turning an
-    /// external count into unbounded probe/allocation work.
-    static let maximumLoadedListEntries = 65_536
+    /// A protocol table may contain at most this many entries regardless of backing.
+    static let maximumListEntries = 65_536
+
+    /// The complete strided table is capped at 512 KiB before file reads, page
+    /// probes, or allocation. This prevents a large advertised stride from
+    /// bypassing the entry-count budget.
+    static let maximumTableByteCount = 512 * 1_024
+
+    static func checkedTableByteCount(
+        count: Int,
+        stride: Int
+    ) -> Result<Int, ObjCProtocolListTableFailure> {
+        let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
+        guard !overflow else {
+            return .failure(.byteCountOverflow(elementCount: count, elementSize: stride))
+        }
+        guard count <= maximumListEntries else {
+            return .failure(
+                .excessiveElementCount(actual: count, maximum: maximumListEntries)
+            )
+        }
+        guard byteCount <= maximumTableByteCount else {
+            return .failure(
+                .excessiveByteCount(actual: byteCount, maximum: maximumTableByteCount)
+            )
+        }
+        return .success(byteCount)
+    }
 }
 
 internal struct ObjCProtocolReference<Source, Protocol> {
@@ -37,6 +61,7 @@ internal enum ObjCProtocolListTableFailure: Error, Equatable {
     case invalidElementCount(UInt64)
     case invalidSignedElementCount(Int)
     case excessiveElementCount(actual: Int, maximum: Int)
+    case excessiveByteCount(actual: Int, maximum: Int)
     case byteCountOverflow(elementCount: Int, elementSize: Int)
     case rangeOverflow(startOffset: UInt64, byteCount: Int)
     case unreadableFileRange(offset: UInt64, byteCount: Int)
@@ -108,6 +133,8 @@ extension ObjCProtocolListTableFailure {
             .invalidSignedElementCount(count)
         case let .excessiveElementCount(actual, maximum):
             .excessiveElementCount(actual: actual, maximum: maximum)
+        case let .excessiveByteCount(actual, maximum):
+            .excessiveByteCount(actual: actual, maximum: maximum)
         case let .byteCountOverflow(count, size):
             .byteCountOverflow(elementCount: count, elementSize: size)
         case let .rangeOverflow(offset, byteCount):
@@ -158,9 +185,10 @@ extension _FileIOProtocol {
         guard stride >= elementSize else {
             return .failure(.byteCountOverflow(elementCount: count, elementSize: stride))
         }
-        let (byteCount, byteCountOverflow) = count.multipliedReportingOverflow(by: stride)
-        guard !byteCountOverflow else {
-            return .failure(.byteCountOverflow(elementCount: count, elementSize: elementSize))
+        let byteCount: Int
+        switch ObjCProtocolReadLimits.checkedTableByteCount(count: count, stride: stride) {
+        case .success(let value): byteCount = value
+        case .failure(let failure): return .failure(failure)
         }
 
         guard let readOffset = Int(exactly: offset),
@@ -227,11 +255,10 @@ extension ObjCProtocolListProtocol {
 
     private func checkedByteCount(count: Int) -> Result<Int, ObjCProtocolListTableFailure> {
         let elementSize = MemoryLayout<ObjCProtocol.Layout.Pointer>.size
-        let (byteCount, overflow) = count.multipliedReportingOverflow(by: elementSize)
-        guard !overflow else {
-            return .failure(.byteCountOverflow(elementCount: count, elementSize: elementSize))
-        }
-        return .success(byteCount)
+        return ObjCProtocolReadLimits.checkedTableByteCount(
+            count: count,
+            stride: elementSize
+        )
     }
 
     internal func readProtocols(
@@ -372,14 +399,6 @@ extension ObjCProtocolListProtocol {
         switch checkedElementCount() {
         case .success(let value): count = value
         case .failure(let failure): return .failure(failure)
-        }
-        guard count <= ObjCProtocolReadLimits.maximumLoadedListEntries else {
-            return .failure(
-                .excessiveElementCount(
-                    actual: count,
-                    maximum: ObjCProtocolReadLimits.maximumLoadedListEntries
-                )
-            )
         }
         let byteCount: Int
         switch checkedByteCount(count: count) {

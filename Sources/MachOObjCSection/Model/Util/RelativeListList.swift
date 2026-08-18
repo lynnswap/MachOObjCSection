@@ -19,6 +19,9 @@ public struct RelativeListListEntry: LayoutWrapper {
 
     public var imageIndex: Int { numericCast(layout.imageIndex) }
     public var listOffset: Int { numericCast(layout.listOffset) }
+
+    /// The signed 48-bit displacement without narrowing to the host `Int` width.
+    internal var signedListOffset: Int64 { layout.listOffset }
 }
 
 public protocol RelativeListListProtocol: EntrySizeListProtocol where Entry == RelativeListListEntry {

@@ -135,8 +135,11 @@ extension MachOFile {
     func relativeListLocation(
         for entry: RelativeListListEntry
     ) -> (image: MachOFile, cache: DyldCache, fileOffset: UInt64)? {
-        let (relativeOffset, overflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !overflow, let offset = UInt64(exactly: relativeOffset) else { return nil }
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let cache,
               let located = cache._machO(at: entry.imageIndex) else {

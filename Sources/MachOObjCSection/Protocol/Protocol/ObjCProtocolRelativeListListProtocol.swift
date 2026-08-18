@@ -173,17 +173,21 @@ extension ObjCProtocolRelativeListListProtocol {
         guard let location = locationResolver(machO, entry) else {
             return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
         }
-        let (relativeOffset, relativeOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !relativeOverflow, let canonicalOffset = UInt64(exactly: relativeOffset) else {
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let canonicalOffset = UInt64(exactly: relativeOffset) else {
             return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
         }
+        let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
         guard let header: List.Header = location.file.readProtocolLayout(
             offset: location.fileOffset,
             as: List.Header.self
         ) else {
             return .failure(
                 .init(
-                    listOffset: relativeOffset,
+                    listOffset: diagnosticOffset,
                     failure: .unreadableFileHeader(
                         offset: location.fileOffset,
                         byteCount: MemoryLayout<List.Header>.size
@@ -207,30 +211,15 @@ extension ObjCProtocolRelativeListListProtocol {
         case .success(let value): countAndStride = value
         case .failure(let failure): return .failure(failure)
         }
-        guard countAndStride.count <= ObjCProtocolReadLimits.maximumLoadedListEntries else {
+        let byteCount: Int
+        switch ObjCProtocolReadLimits.checkedTableByteCount(
+            count: countAndStride.count,
+            stride: countAndStride.stride
+        ) {
+        case .success(let value): byteCount = value
+        case .failure(let failure):
             return .failure(
-                .init(
-                    listOffset: offset,
-                    failure: .excessiveElementCount(
-                        actual: countAndStride.count,
-                        maximum: ObjCProtocolReadLimits.maximumLoadedListEntries
-                    )
-                )
-            )
-        }
-
-        let (byteCount, byteOverflow) = countAndStride.count.multipliedReportingOverflow(
-            by: countAndStride.stride
-        )
-        guard !byteOverflow else {
-            return .failure(
-                .init(
-                    listOffset: offset,
-                    failure: .byteCountOverflow(
-                        elementCount: countAndStride.count,
-                        elementSize: countAndStride.stride
-                    )
-                )
+                .init(listOffset: offset, failure: failure.diagnosticFailure)
             )
         }
         guard let listAddress = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)) else {
@@ -275,8 +264,10 @@ extension ObjCProtocolRelativeListListProtocol {
         case .failure(let failure): return .failure(failure)
         }
 
-        let (relativeOffset, relativeOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !relativeOverflow,
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
               let address = addingSignedDisplacement(
                 relativeOffset,
                 to: UInt(bitPattern: machO.ptr)
@@ -284,10 +275,11 @@ extension ObjCProtocolRelativeListListProtocol {
               let pointer = UnsafeRawPointer(bitPattern: address) else {
             return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
         }
+        let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
         guard isPointerSafelyReadable(pointer, length: MemoryLayout<List.Header>.size) else {
             return .failure(
                 .init(
-                    listOffset: relativeOffset,
+                    listOffset: diagnosticOffset,
                     failure: .unreadableImageHeader(
                         address: address,
                         byteCount: MemoryLayout<List.Header>.size
@@ -302,7 +294,7 @@ extension ObjCProtocolRelativeListListProtocol {
               ) else {
             return .failure(
                 .init(
-                    listOffset: relativeOffset,
+                    listOffset: diagnosticOffset,
                     failure: .relativeImageUnavailable(imageIndex: imageIndex)
                 )
             )

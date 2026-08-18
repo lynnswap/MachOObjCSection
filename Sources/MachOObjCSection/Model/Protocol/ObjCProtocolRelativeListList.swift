@@ -33,8 +33,10 @@ extension ObjCProtocolRelativeListList64 {
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !offsetOverflow,
+        guard let offset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
               let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
               let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
 
@@ -62,8 +64,11 @@ extension ObjCProtocolRelativeListList64 {
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let (relativeOffset, overflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !overflow, let offset = UInt64(exactly: relativeOffset) else { return nil }
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
@@ -109,8 +114,10 @@ extension ObjCProtocolRelativeListList32 {
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !offsetOverflow,
+        guard let offset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
               let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
               let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
 
@@ -138,8 +145,11 @@ extension ObjCProtocolRelativeListList32 {
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let (relativeOffset, overflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !overflow, let offset = UInt64(exactly: relativeOffset) else { return nil }
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil

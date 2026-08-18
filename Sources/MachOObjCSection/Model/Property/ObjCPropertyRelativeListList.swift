@@ -26,16 +26,21 @@ extension ObjCPropertyRelativeListList {
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
+        guard let offset = addingSignedDisplacement(entry.signedListOffset, to: entry.offset),
+              let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
+              let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
 
 #if canImport(MachO)
         guard let cache: DyldCacheLoaded = .current else { return nil }
         guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
+        guard let listOffset = signedDisplacement(
+            from: UInt(bitPattern: machO.ptr),
+            to: address
+        ) else { return nil }
 
         let list = List(
             ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr),
+            offset: listOffset,
             is64Bit: machO.is64Bit
         )
 
@@ -46,7 +51,12 @@ extension ObjCPropertyRelativeListList {
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset),
+              let listOffset = Int(exactly: offset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
@@ -54,7 +64,7 @@ extension ObjCPropertyRelativeListList {
 
         let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
         let list = List(
-            offset: numericCast(offset),
+            offset: listOffset,
             header: header,
             is64Bit: location.image.is64Bit
         )

@@ -40,6 +40,16 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             return true
         }
 
+        let excessiveCount = ObjCProtocolReadLimits.maximumListEntries + 1
+        let excessiveList = ObjCProtocolList64(
+            offset: SyntheticGraph.protocolListOffset(for: 0),
+            header: .init(_count: UInt64(excessiveCount))
+        )
+        assertTableFailure(excessiveList.readProtocols(in: fixture.machO)) {
+            guard case let .excessiveElementCount(actual, maximum) = $0 else { return false }
+            return actual == excessiveCount && maximum == ObjCProtocolReadLimits.maximumListEntries
+        }
+
         let overflowingCount = UInt64(Int.max / MemoryLayout<UInt64>.size + 1)
         let byteOverflow = ObjCProtocolList64(
             offset: SyntheticGraph.protocolListOffset(for: 0),
@@ -88,7 +98,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
     func testLoadedImageRejectsExcessiveCountBeforeReadableMappingWork() throws {
         let fixture = SyntheticReadableImageFixture()
-        let excessiveCount = ObjCProtocolReadLimits.maximumLoadedListEntries + 1
+        let excessiveCount = ObjCProtocolReadLimits.maximumListEntries + 1
         let list = ObjCProtocolList64(
             offset: fixture.tableOffset,
             header: .init(_count: UInt64(excessiveCount))
@@ -96,7 +106,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         assertTableFailure(list.readProtocols(in: fixture.machO)) {
             guard case let .excessiveElementCount(actual, maximum) = $0 else { return false }
             return actual == excessiveCount
-                && maximum == ObjCProtocolReadLimits.maximumLoadedListEntries
+                && maximum == ObjCProtocolReadLimits.maximumListEntries
         }
     }
 
@@ -366,6 +376,116 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertEqual(diagnostic.subject, .class(name: "Owner"))
         XCTAssertEqual(diagnostic.listOffset, locationFailure.listOffset)
         XCTAssertEqual(diagnostic.failure, .invalidRelativeListLocation)
+    }
+
+    func testRelativeTablesRejectExcessiveByteCountForFileAndImage() throws {
+        let advertisedStride = ObjCProtocolReadLimits.maximumTableByteCount + 1
+        let header = EntrySizeListHeader(
+            layout: .init(entsizeAndFlags: UInt32(advertisedStride), count: 1)
+        )
+
+        let fileFixture = try SyntheticRelativeFileFixture()
+        let fileList = ObjCProtocolRelativeListList64(
+            offset: fileFixture.relativeOffset,
+            header: header
+        )
+        guard case .failure(let fileFailure) = fileList.resolveList(
+            in: fileFixture.machO,
+            forImageIndex: 1
+        ) else {
+            return XCTFail("Expected file relative table byte-budget failure")
+        }
+        XCTAssertEqual(
+            fileFailure.failure,
+            .excessiveByteCount(
+                actual: advertisedStride,
+                maximum: ObjCProtocolReadLimits.maximumTableByteCount
+            )
+        )
+
+        let imageFixture = SyntheticNegativeImageFixture()
+        let imageList = ObjCProtocolRelativeListList64(
+            offset: imageFixture.relative64.offset,
+            header: header
+        )
+        guard case .failure(let imageFailure) = imageList.resolveList(
+            in: imageFixture.machO,
+            forImageIndex: 1,
+            imageResolver: { _ in imageFixture.machO }
+        ) else {
+            return XCTFail("Expected image relative table byte-budget failure")
+        }
+        XCTAssertEqual(
+            imageFailure.failure,
+            .excessiveByteCount(
+                actual: advertisedStride,
+                maximum: ObjCProtocolReadLimits.maximumTableByteCount
+            )
+        )
+    }
+
+    func testRelativeByteOverflowReportsAdvertisedStride() throws {
+        let fixture = try SyntheticRelativeFileFixture()
+        let advertisedStride = UInt32.max
+        let relative = ObjCProtocolRelativeListList64(
+            offset: fixture.relativeOffset,
+            header: .init(
+                layout: .init(entsizeAndFlags: advertisedStride, count: UInt32.max)
+            )
+        )
+        guard case .failure(let failure) = relative.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1
+        ) else {
+            return XCTFail("Expected relative table byte-count overflow")
+        }
+#if arch(arm64_32) || arch(arm) || arch(i386)
+        XCTAssertEqual(failure.failure, .invalidElementCount(UInt64(UInt32.max)))
+#else
+        XCTAssertEqual(
+            failure.failure,
+            .byteCountOverflow(
+                elementCount: Int(UInt32.max),
+                elementSize: Int(advertisedStride)
+            )
+        )
+#endif
+    }
+
+    func testProtocolRelativeDisplacementDoesNotNarrowBeforeCheckedResolution() throws {
+        let fixture = try SyntheticRelativeFileFixture(
+            entryListOffset: Int64(Int32.max) + 1
+        )
+        let locationResolver: (MachOFile, RelativeListListEntry) -> ObjCProtocolRelativeFileLocation? = {
+            machO, _ in
+            .direct(
+                in: machO,
+                fileOffset: UInt64(fixture.regularListOffset)
+            )
+        }
+
+        let result = fixture.relative64.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1,
+            locationResolver: locationResolver
+        )
+#if arch(arm64_32) || arch(arm) || arch(i386)
+        guard case .failure(let failure) = result else {
+            return XCTFail("Expected an unrepresentable 32-bit list offset to fail safely")
+        }
+        XCTAssertEqual(failure.failure, .invalidRelativeListLocation)
+#else
+        guard case .resolved(_, let list) = result else {
+            return XCTFail("Expected the signed 48-bit displacement to remain intact")
+        }
+        XCTAssertEqual(
+            list.offset,
+            fixture.relativeOffset
+                + MemoryLayout<EntrySizeListHeader>.size
+                + Int(Int32.max)
+                + 1
+        )
+#endif
     }
 
     func testRelativeCountRejectsValuesBeyondArm64_32IntRange() {
@@ -1086,7 +1206,7 @@ private final class SyntheticReadableImageFixture {
     private let storage: UnsafeMutableRawPointer
 
     init() {
-        let tableBytes = (ObjCProtocolReadLimits.maximumLoadedListEntries + 1)
+        let tableBytes = (ObjCProtocolReadLimits.maximumListEntries + 1)
             * MemoryLayout<UInt64>.size
         let byteCount = tableOffset + MemoryLayout<ObjCProtocolListHeader64>.size + tableBytes
         let allocatedStorage = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
@@ -1213,7 +1333,7 @@ private final class SyntheticRelativeFileFixture {
     let regularListOffset = 0x300
     private let url: URL
 
-    init() throws {
+    init(entryListOffset: Int64? = nil) throws {
         let fileSize = 0x1000
         let vmAddress: UInt64 = 0x2000_0000
         var data = Data(count: fileSize)
@@ -1246,7 +1366,7 @@ private final class SyntheticRelativeFileFixture {
         let entryOffset = relativeOffset + MemoryLayout<EntrySizeListHeader>.size
         var entry = RelativeListListEntry.Layout()
         entry.imageIndex = 1
-        entry.listOffset = Int64(regularListOffset - entryOffset)
+        entry.listOffset = entryListOffset ?? Int64(regularListOffset - entryOffset)
         data.store(entry, at: entryOffset)
         data.store(ObjCProtocolListHeader64(_count: 0), at: regularListOffset)
 

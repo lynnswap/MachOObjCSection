@@ -96,8 +96,11 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
             /// A custom protocol-list header supplied a negative count.
             case invalidSignedElementCount(Int)
 
-            /// A loaded-image list exceeds the parser's finite resource budget.
+            /// A protocol list exceeds the parser's finite entry budget.
             case excessiveElementCount(actual: Int, maximum: Int)
+
+            /// A strided table exceeds the parser's finite byte budget.
+            case excessiveByteCount(actual: Int, maximum: Int)
 
             /// A non-null list pointer could not be rebased or canonicalized.
             case unresolvedListPointer
