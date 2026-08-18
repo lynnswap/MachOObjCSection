@@ -27,7 +27,7 @@ extension ObjCProtocolList64 {
     @_spi(Core)
     public init(ptr: UnsafeRawPointer, offset: Int) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 }
 

@@ -9,7 +9,7 @@ import Foundation
 internal struct ObjCProtocolTraversalContext {
     static let maximumDepth = 64
 
-    enum ReferenceDecision {
+    enum ReferenceDecision: Equatable {
         case descend
         case shallowCycle
         case shallowLimit
@@ -106,6 +106,19 @@ internal struct ObjCProtocolTraversalContext {
         )
     }
 
+    mutating func record(resolutionFailure: ObjCProtocolListResolutionFailure) {
+        diagnostics.append(
+            .unreadableList(
+                .init(
+                    subject: subject,
+                    protocolPath: protocolPath,
+                    listOffset: resolutionFailure.listOffset,
+                    failure: resolutionFailure.failure
+                )
+            )
+        )
+    }
+
     mutating func record(
         entryFailure: ObjCProtocolListEntryFailure,
         listOffset: Int
@@ -121,20 +134,58 @@ internal struct ObjCProtocolTraversalContext {
             )
         )
     }
+
+    mutating func recordInvalidRootIdentity(protocolOffset: Int) {
+        diagnostics.append(
+            .invalidIdentity(
+                .init(subject: subject, protocolOffset: protocolOffset)
+            )
+        )
+    }
 }
 
 extension ObjCProtocolProtocol {
-    internal func traversalIdentity(in machO: MachOFile) -> ObjCProtocolIdentity {
-        .file(
-            backing: ObjectIdentifier(machO.fileHandleIdentity),
-            offset: offset
-        )
+    internal func traversalIdentity(in machO: MachOFile) -> ObjCProtocolIdentity? {
+        machO.traversalIdentity(protocolOffset: offset)
     }
 
     internal func traversalIdentity(in machO: MachOImage) -> ObjCProtocolIdentity? {
-        let baseAddress = Int(bitPattern: machO.ptr)
-        let (objectAddress, overflow) = baseAddress.addingReportingOverflow(offset)
-        guard !overflow else { return nil }
-        return .image(address: UInt(bitPattern: objectAddress))
+        guard let objectAddress = addingSignedDisplacement(
+            offset,
+            to: UInt(bitPattern: machO.ptr)
+        ) else { return nil }
+        return .image(address: objectAddress)
+    }
+}
+
+extension MachOFile {
+    internal func traversalIdentity(
+        protocolOffset: Int,
+        unslidAddress: UInt64? = nil
+    ) -> ObjCProtocolIdentity? {
+        if let cache {
+            let address: UInt64
+            if let unslidAddress {
+                address = unslidAddress
+            } else {
+                guard let offset = UInt64(exactly: protocolOffset),
+                      let canonicalAddress = checkedCacheAddress(
+                        sharedRegionStart: cache.mainCacheHeader.sharedRegionStart,
+                        offset: offset
+                      ) else { return nil }
+                address = canonicalAddress
+            }
+            return .cache(
+                uuid: cache.mainCacheHeader.uuid,
+                unslidAddress: address
+            )
+        }
+
+        guard protocolOffset >= 0, headerStartOffset >= 0 else { return nil }
+        return .file(
+            path: url.standardizedFileURL.path,
+            headerOffset: headerStartOffset,
+            protocolOffset: protocolOffset
+        )
     }
 }

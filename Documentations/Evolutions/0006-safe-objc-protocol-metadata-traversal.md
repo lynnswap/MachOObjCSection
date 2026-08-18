@@ -1,7 +1,7 @@
 # 0006 - 安全读取并有界遍历 Objective-C protocol metadata
 
-- **状态**: Implemented
-- **作者**: JH
+- **状态**: In Review
+- **作者**: Kazuki Nakashima
 - **创建日期**: 2026-08-18
 - **最后更新**: 2026-08-18
 - **所属愿景**: 无
@@ -91,6 +91,11 @@ SPI 不承诺 ABI。普通 source consumer 不导入 SPI，现有 `info(...)` �
 3. list offset、header size、table bytes 的加法不得 overflow；
 4. file mode 必须完全落在 backing file range；image mode 必须是当前 task 可读 range。
 
+loaded image 另有独立资源预算：一张 regular/relative protocol pointer table 最多 **65,536
+entries**。64-bit 下是 512 KiB、按 4 KiB page 计算最多触及 129 页；即使攻击者准备了一段很大的
+全可读 mapping，count 也不能把 page probe、allocation 和遍历工作放大到 task-wide 尺度。这个 cap
+在 probe 与 `reserveCapacity` 之前执行，并以 typed excessive-count diagnostic 报告。
+
 ### 单 entry 验证
 
 整表有效后保持声明顺序逐项处理。无法 rebase、找不到 backing data、或 protocol layout range
@@ -105,8 +110,9 @@ table 不会漏掉中间 unmapped page，也不需要为每个 pointer slot 单�
 
 ### identity
 
-- file mode：backing file-handle identity 与 protocol offset 的组合；同一个 cache wrapper 被重新构造
-  也仍指向同一 identity。
+- dyld-cache file mode：main cache UUID 与 canonical unslid protocol address 的组合；subcache wrapper
+  被重新打开也不改变 identity。
+- non-cache file mode：standardized source path、Mach-O header offset 与 protocol offset 的组合。
 - image mode：protocol object 的实际 address。
 
 名称不参与 identity；不同 image 可合法出现同名 protocol。
@@ -160,7 +166,7 @@ logger，也不把 handler 塞进 `Sendable` options。
 
 ## 测试计划
 
-已用仓库内合成 bytes / graph 覆盖以下 14 个回归场景，不依赖 host system framework：
+仓库内回归使用合成 bytes / graph，不依赖 host system framework，覆盖：
 
 1. 32/64 count exact conversion、byte multiplication/address addition overflow、OOB table；
 2. 一条坏 entry 与一条好 entry 同表时保留好 entry，并记录坏 index；
@@ -180,4 +186,6 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | 选择 path-scoped set，不选 global visited | global set 会把 diamond DAG 的第二条合法路径误判成重复并静默删掉 |
 | 2026-08-18 | diagnostics 采用值结果 SPI | options handler 会改变 Sendable configuration 的职责；library stderr 会夺走 consumer 的日志策略 |
 | 2026-08-18 | image range probe 改为检查每个 touched page | first/last 不能证明中间页可读；逐 entry probe 又会在 48,743-node scan 上放大 syscall 数 |
-| 2026-08-18 | Implemented | `ObjCProtocolSafetyTests` 14 tests 全绿；Diagnostics-only SPI consumer compile 成功；排除既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后，其余 49 tests 全绿；release build 与 iOS Simulator arm64/x86_64 build 成功 |
+| 2026-08-18 | loaded table resource budget 取 65,536 entries | 64-bit 为 512 KiB / 最多 129 个 4 KiB pages；mapped-range 大小不再决定 parser 愿意承担的工作量 |
+| 2026-08-18 | In Review | fork branch 已实现并进入 review；只有合并后才能按本仓库定义改为 Implemented。最终 test/build 实绩在 review 修正收敛后更新 |
+| 2026-08-18 | Review corrections complete | synthetic safety tests 28 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 63 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |

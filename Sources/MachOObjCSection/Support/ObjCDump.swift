@@ -26,6 +26,8 @@ public struct ObjCInfoOptions: Sendable {
     }
 
     /// Preserves the default behavior and expands referenced protocols recursively.
+    /// Expansion is cycle-safe and hard-capped at 64 reference edges; a cutoff
+    /// edge is represented by a shallow name-only leaf.
     public static let recursive = ObjCInfoOptions()
 
     /// Uses the protocol detail level needed for Objective-C header dumps.
@@ -41,13 +43,20 @@ public struct ObjCInfoOptions: Sendable {
 public struct ObjCProtocolInfoOptions: Sendable {
     /// Controls how far referenced protocols are followed.
     public enum Traversal: Sendable {
-        /// Expands referenced protocols recursively.
+        /// Expands referenced protocols recursively, up to 64 reference edges.
+        ///
+        /// A cycle or a reference beyond that hard ceiling is represented by a
+        /// shallow name-only leaf. Use the Diagnostics SPI to observe either cutoff;
+        /// the compatibility `info(...)` APIs intentionally discard diagnostics.
         case recursive
 
         /// Expands referenced protocols up to the specified number of reference edges.
         ///
         /// A depth of `0` does not include referenced protocols. A depth of `1`
-        /// includes only directly referenced protocols.
+        /// includes only directly referenced protocols. Values greater than `64`
+        /// still use the hard ceiling: the edge beyond 64 becomes a shallow name-only
+        /// leaf and produces a Diagnostics SPI recursion-limit diagnostic. Exhausting
+        /// a configured depth at or below 64 is intentional and produces no warning.
         case depth(Int)
     }
 
@@ -81,6 +90,8 @@ public struct ObjCProtocolInfoOptions: Sendable {
     }
 
     /// Preserves the default behavior and expands referenced protocols recursively.
+    /// Expansion is cycle-safe and hard-capped at 64 reference edges; a cutoff
+    /// edge is represented by a shallow name-only leaf.
     public static let recursive = ObjCProtocolInfoOptions()
 
     /// Includes direct protocol references as name-only protocol information.
@@ -182,14 +193,24 @@ extension ObjCProtocolProtocol {
         options: ObjCProtocolInfoOptions = .recursive
     ) -> ObjCMetadataReadResult<ObjCProtocolInfo> {
         let name = mangledName(in: machO)
+        let identity = traversalIdentity(in: machO)
         var context = ObjCProtocolTraversalContext(
             subject: .protocol(name: name),
-            rootProtocol: (traversalIdentity(in: machO), name)
+            rootProtocol: identity.map { ($0, name) }
         )
+        if identity == nil {
+            context.recordInvalidRootIdentity(protocolOffset: offset)
+        }
+        let effectiveOptions = identity == nil
+            ? ObjCProtocolInfoOptions(
+                traversal: .depth(0),
+                referencedProtocolInfo: options.referencedProtocolInfo
+            )
+            : options
         let value = _readInfo(
             in: machO,
             name: name,
-            options: options,
+            options: effectiveOptions,
             context: &context
         )
         return .init(value: value, diagnostics: context.diagnostics)
@@ -277,10 +298,19 @@ extension ObjCProtocolProtocol {
             subject: .protocol(name: name),
             rootProtocol: rootProtocol
         )
+        if rootProtocol == nil {
+            context.recordInvalidRootIdentity(protocolOffset: offset)
+        }
+        let effectiveOptions = rootProtocol == nil
+            ? ObjCProtocolInfoOptions(
+                traversal: .depth(0),
+                referencedProtocolInfo: options.referencedProtocolInfo
+            )
+            : options
         let value = _readInfo(
             in: machO,
             name: name,
-            options: options,
+            options: effectiveOptions,
             context: &context
         )
         return .init(value: value, diagnostics: context.diagnostics)
@@ -444,8 +474,8 @@ extension ObjCProtocolProtocol {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions, context: &context) ?? []
+        return protocolListResolution(in: machO)
+            .protocolInfos(options: nextOptions, context: &context)
     }
 
     fileprivate func referencedProtocolInfos(
@@ -456,8 +486,8 @@ extension ObjCProtocolProtocol {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions, context: &context) ?? []
+        return protocolListResolution(in: machO)
+            .protocolInfos(options: nextOptions, context: &context)
     }
 }
 
@@ -545,6 +575,56 @@ extension ObjCProtocolListProtocol {
     }
 }
 
+extension ObjCProtocolListResolution where Source == MachOFile, List: ObjCProtocolListProtocol {
+    fileprivate func referencedProtocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        guard let nextOptions = options.nextForReferencedProtocol() else { return [] }
+        return protocolInfos(options: nextOptions, context: &context)
+    }
+
+    fileprivate func protocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        switch self {
+        case .absent:
+            return []
+        case .failure(let failure):
+            context.record(resolutionFailure: failure)
+            return []
+        case let .resolved(source, list):
+            return list.protocolInfos(in: source, options: options, context: &context)
+        }
+    }
+}
+
+extension ObjCProtocolListResolution where Source == MachOImage, List: ObjCProtocolListProtocol {
+    fileprivate func referencedProtocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        guard let nextOptions = options.nextForReferencedProtocol() else { return [] }
+        return protocolInfos(options: nextOptions, context: &context)
+    }
+
+    fileprivate func protocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        switch self {
+        case .absent:
+            return []
+        case .failure(let failure):
+            context.record(resolutionFailure: failure)
+            return []
+        case let .resolved(source, list):
+            return list.protocolInfos(in: source, options: options, context: &context)
+        }
+    }
+}
+
 // MARK: - Class
 extension ObjCClassProtocol {
     public func info(
@@ -600,14 +680,11 @@ extension ObjCClassProtocol {
         }
 
         let protocols = data
-            .resolvedProtocolList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in
-                list.referencedProtocolInfos(
-                    in: m,
-                    options: options.protocolInfoOptions,
-                    context: &context
-                )
-            } ?? []
+            .protocolListResolution(in: machO, imageIndex: imageIndex())
+            .referencedProtocolInfos(
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
         let ivarList = data.ivarList(in: machO)
         let ivars = ivarList?
@@ -745,14 +822,11 @@ extension ObjCClassProtocol {
         }
 
         let protocols = data
-            .resolvedProtocolList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in
-                list.referencedProtocolInfos(
-                    in: m,
-                    options: options.protocolInfoOptions,
-                    context: &context
-                )
-            } ?? []
+            .protocolListResolution(in: machO, imageIndex: imageIndex())
+            .referencedProtocolInfos(
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
         let ivarList = data.ivarList(in: machO)
         let ivars = ivarList?
@@ -834,12 +908,11 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let protocols = protocolList(in: machO)?
+        let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
-                in: machO,
                 options: options.protocolInfoOptions,
                 context: &context
-            ) ?? []
+            )
 
         // Instance
         let propertiesList = instancePropertyList(in: machO)
@@ -907,12 +980,11 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let protocols = protocolList(in: machO)?
+        let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
-                in: machO,
                 options: options.protocolInfoOptions,
                 context: &context
-            ) ?? []
+            )
 
         // Instance
         let propertiesList = instancePropertyList(in: machO)
@@ -978,17 +1050,6 @@ fileprivate extension ObjCClassRODataProtocol {
         return propertyList(in: machO).map { (machO, $0) }
     }
 
-    func resolvedProtocolList(
-        in machO: MachOFile,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOFile, ObjCProtocolList)? {
-        if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.safelyReadList(in: machO, forImageIndex: imageIndex()) {
-            return resolved
-        }
-        return protocolList(in: machO).map { (machO, $0) }
-    }
-
     func resolvedMethodList(
         in machO: MachOImage,
         imageIndex: @autoclosure () -> Int?
@@ -1011,14 +1072,4 @@ fileprivate extension ObjCClassRODataProtocol {
         return propertyList(in: machO).map { (machO, $0) }
     }
 
-    func resolvedProtocolList(
-        in machO: MachOImage,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOImage, ObjCProtocolList)? {
-        if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.safelyReadList(in: machO, forImageIndex: imageIndex()) {
-            return resolved
-        }
-        return protocolList(in: machO).map { (machO, $0) }
-    }
 }

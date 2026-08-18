@@ -41,6 +41,9 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
     /// Following the reference would exceed the hard traversal ceiling.
     case recursionLimit(RecursionLimit)
 
+    /// A root protocol object has no checked canonical traversal identity.
+    case invalidIdentity(InvalidIdentity)
+
     /// The root metadata subject that owns a diagnostic.
     public enum Subject: Sendable, Equatable {
         /// An Objective-C class.
@@ -93,6 +96,36 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
             /// A custom protocol-list header supplied a negative count.
             case invalidSignedElementCount(Int)
 
+            /// A loaded-image list exceeds the parser's finite resource budget.
+            case excessiveElementCount(actual: Int, maximum: Int)
+
+            /// A non-null list pointer could not be rebased or canonicalized.
+            case unresolvedListPointer
+
+            /// A resolved list pointer has no readable backing source.
+            case missingListBackingData
+
+            /// A file-backed list header is not entirely readable.
+            case unreadableFileHeader(offset: UInt64, byteCount: Int)
+
+            /// A loaded-image list header is not entirely readable.
+            case unreadableImageHeader(address: UInt, byteCount: Int)
+
+            /// A relative-list header advertises an entry stride smaller than its layout.
+            case invalidRelativeEntrySize(advertised: UInt32, minimum: Int)
+
+            /// The current image has no stable dyld-cache image index.
+            case missingRelativeImageIndex
+
+            /// No relative-list entry belongs to the requested cache image index.
+            case relativeEntryNotFound(imageIndex: Int)
+
+            /// A relative-list entry cannot be mapped to its file/cache location.
+            case invalidRelativeListLocation
+
+            /// A loaded relative-list entry names an unavailable cache image.
+            case relativeImageUnavailable(imageIndex: Int)
+
             /// Multiplying the element count by pointer size overflowed.
             case byteCountOverflow(elementCount: Int, elementSize: Int)
 
@@ -113,6 +146,9 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
 
             /// One loaded-image pointer value did not identify an object.
             case invalidPointer(entryIndex: Int)
+
+            /// One protocol reference has no canonical traversal identity.
+            case invalidIdentity(entryIndex: Int)
 
             /// One rebased pointer has no available backing data.
             case missingBackingData(entryIndex: Int)
@@ -158,6 +194,20 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
             self.subject = subject
             self.protocolPath = protocolPath
             self.maximumDepth = maximumDepth
+        }
+    }
+
+    /// Details for a root protocol whose address cannot be canonicalized.
+    public struct InvalidIdentity: Sendable, Equatable {
+        /// The root protocol being decoded.
+        public let subject: Subject
+
+        /// The source-relative protocol offset that was rejected.
+        public let protocolOffset: Int
+
+        internal init(subject: Subject, protocolOffset: Int) {
+            self.subject = subject
+            self.protocolOffset = protocolOffset
         }
     }
 }

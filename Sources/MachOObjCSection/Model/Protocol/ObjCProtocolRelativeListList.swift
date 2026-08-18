@@ -29,15 +29,14 @@ extension ObjCProtocolRelativeListList64 {
         offset: Int
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
         let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !offsetOverflow, offset >= 0 else { return nil }
-        let baseAddress = UInt(bitPattern: machO.ptr)
-        let (address, addressOverflow) = baseAddress.addingReportingOverflow(UInt(offset))
-        guard !addressOverflow, let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
+        guard !offsetOverflow,
+              let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
+              let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
 
         guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
             return nil
@@ -47,9 +46,13 @@ extension ObjCProtocolRelativeListList64 {
         guard let cache: DyldCacheLoaded = .current else { return nil }
         guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
 
+        guard let listOffset = signedDisplacement(
+            from: UInt(bitPattern: machO.ptr),
+            to: address
+        ) else { return nil }
         let list = List(
             ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr)
+            offset: listOffset
         )
 
         return (machO, list)
@@ -72,8 +75,9 @@ extension ObjCProtocolRelativeListList64 {
         ) else {
             return nil
         }
+        guard let listOffset = Int(exactly: offset) else { return nil }
         let list = List(
-            offset: numericCast(offset),
+            offset: listOffset,
             header: header
         )
 
@@ -101,15 +105,14 @@ extension ObjCProtocolRelativeListList32 {
         offset: Int
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
         let (offset, offsetOverflow) = entry.offset.addingReportingOverflow(entry.listOffset)
-        guard !offsetOverflow, offset >= 0 else { return nil }
-        let baseAddress = UInt(bitPattern: machO.ptr)
-        let (address, addressOverflow) = baseAddress.addingReportingOverflow(UInt(offset))
-        guard !addressOverflow, let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
+        guard !offsetOverflow,
+              let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
+              let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
 
         guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
             return nil
@@ -119,9 +122,13 @@ extension ObjCProtocolRelativeListList32 {
         guard let cache: DyldCacheLoaded = .current else { return nil }
         guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
 
+        guard let listOffset = signedDisplacement(
+            from: UInt(bitPattern: machO.ptr),
+            to: address
+        ) else { return nil }
         let list = List(
             ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr)
+            offset: listOffset
         )
 
         return (machO, list)
@@ -144,8 +151,9 @@ extension ObjCProtocolRelativeListList32 {
         ) else {
             return nil
         }
+        guard let listOffset = Int(exactly: offset) else { return nil }
         let list = List(
-            offset: numericCast(offset),
+            offset: listOffset,
             header: header
         )
 

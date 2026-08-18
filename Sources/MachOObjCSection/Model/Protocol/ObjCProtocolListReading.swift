@@ -12,8 +12,16 @@ internal import FileIO
 #endif
 
 internal enum ObjCProtocolIdentity: Hashable {
-    case file(backing: ObjectIdentifier, offset: Int)
+    case cache(uuid: UUID, unslidAddress: UInt64)
+    case file(path: String, headerOffset: Int, protocolOffset: Int)
     case image(address: UInt)
+}
+
+internal enum ObjCProtocolReadLimits {
+    /// At 64-bit pointer width this admits a 512 KiB table spanning at most 129
+    /// 4 KiB pages, while preventing task-wide readable mappings from turning an
+    /// external count into unbounded probe/allocation work.
+    static let maximumLoadedListEntries = 65_536
 }
 
 internal struct ObjCProtocolReference<Source, Protocol> {
@@ -28,6 +36,7 @@ internal enum ObjCProtocolListTableFailure: Error, Equatable {
     case invalidListOffset(Int)
     case invalidElementCount(UInt64)
     case invalidSignedElementCount(Int)
+    case excessiveElementCount(actual: Int, maximum: Int)
     case byteCountOverflow(elementCount: Int, elementSize: Int)
     case rangeOverflow(startOffset: UInt64, byteCount: Int)
     case unreadableFileRange(offset: UInt64, byteCount: Int)
@@ -38,6 +47,7 @@ internal enum ObjCProtocolListEntryFailureReason: Equatable {
     case unresolvedRebase
     case invalidEntryOffset
     case invalidPointer
+    case invalidIdentity
     case missingBackingData
     case unreadableFileLayout(offset: UInt64, byteCount: Int)
     case unreadableImageLayout(address: UInt, byteCount: Int)
@@ -96,6 +106,8 @@ extension ObjCProtocolListTableFailure {
             .invalidElementCount(count)
         case .invalidSignedElementCount(let count):
             .invalidSignedElementCount(count)
+        case let .excessiveElementCount(actual, maximum):
+            .excessiveElementCount(actual: actual, maximum: maximum)
         case let .byteCountOverflow(count, size):
             .byteCountOverflow(elementCount: count, elementSize: size)
         case let .rangeOverflow(offset, byteCount):
@@ -117,6 +129,8 @@ extension ObjCProtocolListEntryFailure {
             .invalidEntryOffset(entryIndex: index)
         case .invalidPointer:
             .invalidPointer(entryIndex: index)
+        case .invalidIdentity:
+            .invalidIdentity(entryIndex: index)
         case .missingBackingData:
             .missingBackingData(entryIndex: index)
         case let .unreadableFileLayout(offset, byteCount):
@@ -136,10 +150,15 @@ extension _FileIOProtocol {
     internal func readProtocolTable<Element>(
         offset: UInt64,
         count: Int,
+        stride: Int? = nil,
         as elementType: Element.Type
     ) -> CheckedProtocolRead<[Element]> {
         let elementSize = MemoryLayout<Element>.size
-        let (byteCount, byteCountOverflow) = count.multipliedReportingOverflow(by: elementSize)
+        let stride = stride ?? elementSize
+        guard stride >= elementSize else {
+            return .failure(.byteCountOverflow(elementCount: count, elementSize: stride))
+        }
+        let (byteCount, byteCountOverflow) = count.multipliedReportingOverflow(by: stride)
         guard !byteCountOverflow else {
             return .failure(.byteCountOverflow(elementCount: count, elementSize: elementSize))
         }
@@ -158,7 +177,7 @@ extension _FileIOProtocol {
 
         let pointers = data.withUnsafeBytes { bytes in
             (0..<count).map { index in
-                bytes.loadUnaligned(fromByteOffset: index * elementSize, as: Element.self)
+                bytes.loadUnaligned(fromByteOffset: index * stride, as: Element.self)
             }
         }
         return .success(pointers)
@@ -175,7 +194,12 @@ extension _FileIOProtocol {
               byteCount <= size - readOffset else {
             return nil
         }
-        return try? read(offset: readOffset, as: Layout.self)
+        guard let data = try? readData(offset: readOffset, length: byteCount) else {
+            return nil
+        }
+        return data.withUnsafeBytes { bytes in
+            bytes.loadUnaligned(as: Layout.self)
+        }
     }
 }
 
@@ -313,15 +337,19 @@ extension ObjCProtocolListProtocol {
                 continue
             }
             let objcProtocol = ObjCProtocol(layout: layout, offset: protocolOffset)
+            guard let identity = targetMachO.traversalIdentity(
+                protocolOffset: protocolOffset,
+                unslidAddress: resolved.address
+            ) else {
+                entries.append(.failure(.init(index: index, reason: .invalidIdentity)))
+                continue
+            }
             entries.append(
                 .reference(.init(
                     index: index,
                     source: targetMachO,
                     value: objcProtocol,
-                    identity: .file(
-                        backing: ObjectIdentifier(targetMachO.fileHandleIdentity),
-                        offset: protocolOffset
-                    )
+                    identity: identity
                 ))
             )
         }
@@ -335,7 +363,8 @@ extension ObjCProtocolListProtocol {
         guard !isListOfLists else {
             return .failure(.unsupportedListEncoding)
         }
-        guard offset >= 0, let listOffset = UInt(exactly: offset) else {
+        let imageAddress = UInt(bitPattern: machO.ptr)
+        guard let listAddress = addingSignedDisplacement(offset, to: imageAddress) else {
             return .failure(.invalidListOffset(offset))
         }
 
@@ -344,18 +373,24 @@ extension ObjCProtocolListProtocol {
         case .success(let value): count = value
         case .failure(let failure): return .failure(failure)
         }
+        guard count <= ObjCProtocolReadLimits.maximumLoadedListEntries else {
+            return .failure(
+                .excessiveElementCount(
+                    actual: count,
+                    maximum: ObjCProtocolReadLimits.maximumLoadedListEntries
+                )
+            )
+        }
         let byteCount: Int
         switch checkedByteCount(count: count) {
         case .success(let value): byteCount = value
         case .failure(let failure): return .failure(failure)
         }
 
-        let imageAddress = UInt(bitPattern: machO.ptr)
-        let (listAddress, listOverflow) = imageAddress.addingReportingOverflow(listOffset)
         let (tableAddress, headerOverflow) = listAddress.addingReportingOverflow(
             UInt(MemoryLayout<Header>.size)
         )
-        guard !listOverflow, !headerOverflow else {
+        guard !headerOverflow else {
             return .failure(.rangeOverflow(startOffset: UInt64(imageAddress), byteCount: byteCount))
         }
         let (_, tableOverflow) = tableAddress.addingReportingOverflow(UInt(byteCount))
@@ -419,15 +454,15 @@ extension ObjCProtocolListProtocol {
                 continue
             }
 
-            let targetAddress = Int(bitPattern: targetMachO.ptr)
-            let objectAddress = Int(bitPattern: protocolPointer)
-            let (protocolOffset, offsetOverflow) = objectAddress.subtractingReportingOverflow(targetAddress)
-            guard !offsetOverflow else {
+            guard let protocolOffset = signedDisplacement(
+                from: UInt(bitPattern: targetMachO.ptr),
+                to: strippedAddress
+            ) else {
                 entries.append(.failure(.init(index: index, reason: .invalidEntryOffset)))
                 continue
             }
 
-            let layout = protocolPointer.assumingMemoryBound(to: ObjCProtocol.Layout.self).pointee
+            let layout = protocolPointer.loadUnaligned(as: ObjCProtocol.Layout.self)
             let objcProtocol = ObjCProtocol(layout: layout, offset: protocolOffset)
             entries.append(
                 .reference(.init(

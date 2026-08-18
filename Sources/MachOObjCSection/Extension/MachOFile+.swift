@@ -14,6 +14,24 @@ internal import FileIO
 @_implementationOnly import FileIO
 #endif
 
+@inline(__always)
+internal func checkedCacheAddress(
+    sharedRegionStart: UInt64,
+    offset: UInt64
+) -> UInt64? {
+    let (address, overflow) = sharedRegionStart.addingReportingOverflow(offset)
+    return overflow ? nil : address
+}
+
+@inline(__always)
+internal func checkedCacheOffset(
+    address: UInt64,
+    sharedRegionStart: UInt64
+) -> UInt64? {
+    let (offset, underflow) = address.subtractingReportingOverflow(sharedRegionStart)
+    return underflow ? nil : offset
+}
+
 extension MachOFile {
     internal typealias File = MemoryMappedFile
 
@@ -54,9 +72,11 @@ extension MachOFile {
     /// - Returns: cache and file offset
     func cacheAndFileOffset(fromStart offset: UInt64) -> (DyldCache, UInt64)? {
         guard let cache else { return nil }
-        return cacheAndFileOffset(
-            for: cache.mainCacheHeader.sharedRegionStart + offset
-        )
+        guard let address = checkedCacheAddress(
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart,
+            offset: offset
+        ) else { return nil }
+        return cacheAndFileOffset(for: address)
     }
 }
 
@@ -67,13 +87,18 @@ extension MachOFile {
     ) -> (File, UInt64)? {
         if !isLoadedFromDyldCache,
            let fileOffset = fileOffset(of: address) {
-            return (fileHandle, fileOffset + numericCast(headerStartOffset))
+            guard let headerOffset = UInt64(exactly: headerStartOffset) else { return nil }
+            let (absoluteOffset, overflow) = fileOffset.addingReportingOverflow(headerOffset)
+            guard !overflow else { return nil }
+            return (fileHandle, absoluteOffset)
         }
 
         if let cache,
-           let (_cache, fileOffset) = cacheAndFileOffset(
-            fromStart: address - cache.mainCacheHeader.sharedRegionStart
-           ) {
+           let cacheOffset = checkedCacheOffset(
+            address: address,
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+           ),
+           let (_cache, fileOffset) = cacheAndFileOffset(fromStart: cacheOffset) {
             return (_cache.fileHandle, fileOffset)
         }
 
@@ -84,7 +109,10 @@ extension MachOFile {
         forOffset offset: UInt64
     ) -> (File, UInt64)? {
         if !isLoadedFromDyldCache {
-            return (fileHandle, offset + numericCast(headerStartOffset))
+            guard let headerOffset = UInt64(exactly: headerStartOffset) else { return nil }
+            let (absoluteOffset, overflow) = offset.addingReportingOverflow(headerOffset)
+            guard !overflow else { return nil }
+            return (fileHandle, absoluteOffset)
         }
 
         if let (_cache, fileOffset) = cacheAndFileOffset(
@@ -115,7 +143,10 @@ extension MachOFile {
             return nil
         }
 
-        let address = cache.mainCacheHeader.sharedRegionStart + offset
+        guard let address = checkedCacheAddress(
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart,
+            offset: offset
+        ) else { return nil }
         guard let fileOffset = located.cache.fileOffset(of: address) else {
             return nil
         }
@@ -129,7 +160,8 @@ extension MachOFile {
     func isBind(
         _ offset: Int
     ) -> Bool {
-        resolveBind(at: numericCast(offset)) != nil
+        guard let offset = UInt64(exactly: offset) else { return false }
+        return resolveBind(at: offset) != nil
     }
 
     func isBind(
@@ -157,15 +189,21 @@ extension MachOFile {
     func resolveRebase(
         _ unresolvedValue: UnresolvedValue
     ) -> ResolvedValue? {
-        let offset: UInt64 = numericCast(unresolvedValue.fieldOffset)
+        guard let offset = UInt64(exactly: unresolvedValue.fieldOffset) else {
+            return nil
+        }
 
         if let (cache, _offset) = cacheAndFileOffset(
             fromStart: offset
         ) {
             let address = cache.resolveOptionalRebase(at: _offset) ?? unresolvedValue.value
+            guard let canonicalOffset = checkedCacheOffset(
+                address: address,
+                sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+            ) else { return nil }
             return .init(
                 address: address,
-                offset: address - cache.mainCacheHeader.sharedRegionStart
+                offset: canonicalOffset
             )
         }
 

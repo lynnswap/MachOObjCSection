@@ -230,8 +230,9 @@ extension ObjCProtocolProtocol {
         ) else {
             return nil
         }
+        guard let listOffset = Int(exactly: resolved.offset) else { return nil }
         let list = ObjCProtocolList(
-            offset: numericCast(resolved.offset),
+            offset: listOffset,
             header: header
         )
         return list

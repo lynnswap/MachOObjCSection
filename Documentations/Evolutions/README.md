@@ -28,7 +28,7 @@
 | [0002](0002-objc-machofile-genericization-and-cli.md) | ObjC 索引层泛型化到 MachOFile，并提供 objc-section CLI | Draft |
 | [0003](0003-objc-relationship-tables-return-to-application.md) | ObjC 关系反向表移出索引层，归还应用 | Implemented |
 | [0004](0004-strip-synthesized-setter-selector-fix.md) | 修正 stripSynthesizedMethods 漏剥 setter 的选择器拼写 | Implemented |
-| [0006](0006-safe-objc-protocol-metadata-traversal.md) | 安全读取并有界遍历 Objective-C protocol metadata | Implemented |
+| [0006](0006-safe-objc-protocol-metadata-traversal.md) | 安全读取并有界遍历 Objective-C protocol metadata | In Review |
 
 0002 以 0001 为前置，两者共同构成「让 MachOObjCSection 具备与 MachOSwiftSection 对等的
 渲染 / 索引 / 命令行能力」这一条完整路线。

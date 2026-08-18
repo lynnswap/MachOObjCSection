@@ -1,9 +1,32 @@
 import Foundation
 import XCTest
+#if canImport(Darwin)
+import Darwin
+#endif
 @_spi(Core) @_spi(Diagnostics) @testable import MachOObjCSection
 @testable import MachOKit
 
 final class ObjCProtocolSafetyTests: XCTestCase {
+    func testMemoryProbeRejectsUnreadableMiddlePage() throws {
+#if canImport(Darwin)
+        let pageSize = Int(getpagesize())
+        let length = pageSize * 3
+        let mapping = mmap(nil, length, PROT_READ | PROT_WRITE, MAP_ANON | MAP_PRIVATE, -1, 0)
+        guard mapping != MAP_FAILED, let mapping else {
+            return XCTFail("Failed to allocate test mapping")
+        }
+        defer { munmap(mapping, length) }
+        XCTAssertEqual(mprotect(mapping.advanced(by: pageSize), pageSize, PROT_NONE), 0)
+        XCTAssertFalse(isPointerSafelyReadable(UnsafeRawPointer(mapping), length: length))
+#endif
+    }
+
+    func testCacheAddressArithmeticRejectsUnderflowAndOverflow() {
+        XCTAssertNil(checkedCacheOffset(address: 0x0FFF, sharedRegionStart: 0x1000))
+        XCTAssertEqual(checkedCacheOffset(address: 0x1001, sharedRegionStart: 0x1000), 1)
+        XCTAssertNil(checkedCacheAddress(sharedRegionStart: .max, offset: 1))
+    }
+
     func testFileProtocolListsRejectInvalidCountsAndRangesWithoutTrapping() throws {
         let fixture = try SyntheticFileFixture(nodes: [.init(name: "A")])
 
@@ -53,14 +76,27 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         )
         XCTAssertNil(invalidCount.protocols(in: fixture.machO))
 
-        let count = Int.max / MemoryLayout<UInt64>.size
         let overflowingRange = ObjCProtocolList64(
-            offset: Int.max - 1,
-            header: .init(_count: UInt64(count))
+            offset: .min,
+            header: .init(_count: 1)
         )
         assertTableFailure(overflowingRange.readProtocols(in: fixture.machO)) {
-            guard case .rangeOverflow = $0 else { return false }
+            guard case .invalidListOffset = $0 else { return false }
             return true
+        }
+    }
+
+    func testLoadedImageRejectsExcessiveCountBeforeReadableMappingWork() throws {
+        let fixture = SyntheticReadableImageFixture()
+        let excessiveCount = ObjCProtocolReadLimits.maximumLoadedListEntries + 1
+        let list = ObjCProtocolList64(
+            offset: fixture.tableOffset,
+            header: .init(_count: UInt64(excessiveCount))
+        )
+        assertTableFailure(list.readProtocols(in: fixture.machO)) {
+            guard case let .excessiveElementCount(actual, maximum) = $0 else { return false }
+            return actual == excessiveCount
+                && maximum == ObjCProtocolReadLimits.maximumLoadedListEntries
         }
     }
 
@@ -194,6 +230,160 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertEqual(cycle.protocolPath, ["A", "B", "A"])
     }
 
+    func testReadableUnalignedHeadersAndProtocolLayoutAreLoadedSafely() throws {
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(name: "A", children: [.node(1)]),
+                .init(name: "B", objectOffsetAdjustment: 1)
+            ]
+        )
+        XCTAssertEqual(
+            fixture.protocols[0].readInfo(in: fixture.machO).value?.protocols.map(\.name),
+            ["B"]
+        )
+
+        let storage = UnsafeMutableRawPointer.allocate(byteCount: 64, alignment: 16)
+        defer { storage.deallocate() }
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: 64)
+        var listHeader = ObjCProtocolListHeader64(_count: 7)
+        var relativeHeader = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size),
+                count: 3
+            )
+        )
+        Swift.withUnsafeBytes(of: &listHeader) {
+            storage.advanced(by: 1).copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+        }
+        Swift.withUnsafeBytes(of: &relativeHeader) {
+            storage.advanced(by: 17).copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+        }
+        XCTAssertEqual(ObjCProtocolList64(ptr: storage.advanced(by: 1), offset: 0).header._count, 7)
+        XCTAssertEqual(
+            ObjCProtocolRelativeListList64(ptr: storage.advanced(by: 17), offset: 0).header.count,
+            3
+        )
+    }
+
+    func testNegativeImageDisplacementAndRelativeStrideRemainValid() throws {
+        let fixture = SyntheticNegativeImageFixture()
+
+        let direct = fixture.list64.readProtocols(in: fixture.machO)
+        guard case .success(let directSuccess) = direct else {
+            return XCTFail("Expected negative direct-list displacement to resolve")
+        }
+        XCTAssertEqual(directSuccess.references.map { $0.value.mangledName(in: fixture.machO) }, ["Before"])
+
+        let relative64 = fixture.relative64.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1,
+            imageResolver: { _ in fixture.machO }
+        )
+        guard case .resolved(_, let list64) = relative64 else {
+            return XCTFail("Expected negative 64-bit relative-list displacement to resolve")
+        }
+        XCTAssertEqual(list64.offset, fixture.listOffset)
+        XCTAssertEqual(list64.header._count, 1)
+
+        let relative32 = fixture.relative32.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1,
+            imageResolver: { _ in fixture.machO }
+        )
+        guard case .resolved(_, let list32) = relative32 else {
+            return XCTFail("Expected negative 32-bit relative-list displacement to resolve")
+        }
+        XCTAssertEqual(list32.offset, fixture.listOffset)
+        XCTAssertEqual(list32.header._count, 1)
+    }
+
+    func testRelativeFileListsHonorStrideFor32And64BitLists() throws {
+        let fixture = try SyntheticRelativeFileFixture()
+        let locationResolver: (MachOFile, RelativeListListEntry) -> ObjCProtocolRelativeFileLocation? = {
+            machO, _ in
+            .direct(
+                in: machO,
+                fileOffset: UInt64(fixture.regularListOffset)
+            )
+        }
+
+        let result64 = fixture.relative64.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1,
+            locationResolver: locationResolver
+        )
+        guard case .resolved(_, let list64) = result64 else {
+            return XCTFail("Expected 64-bit relative file list")
+        }
+        XCTAssertEqual(list64.header._count, 0)
+
+        let result32 = fixture.relative32.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1,
+            locationResolver: locationResolver
+        )
+        guard case .resolved(_, let list32) = result32 else {
+            return XCTFail("Expected 32-bit relative file list")
+        }
+        XCTAssertEqual(list32.header._count, 0)
+    }
+
+    func testRelativeListFailuresRemainTyped() throws {
+        let fixture = try SyntheticRelativeFileFixture()
+        let invalidStrideHeader = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size - 1),
+                count: 1
+            )
+        )
+        let invalidStride = ObjCProtocolRelativeListList64(
+            offset: fixture.relativeOffset,
+            header: invalidStrideHeader
+        )
+        guard case .failure(let strideFailure) = invalidStride.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1
+        ) else {
+            return XCTFail("Expected invalid relative stride")
+        }
+        guard case .invalidRelativeEntrySize = strideFailure.failure else {
+            return XCTFail("Unexpected stride failure: \(strideFailure.failure)")
+        }
+
+        guard case .failure(let locationFailure) = fixture.relative64.resolveList(
+            in: fixture.machO,
+            forImageIndex: 1
+        ) else {
+            return XCTFail("Expected missing relative cache location")
+        }
+        XCTAssertEqual(locationFailure.failure, .invalidRelativeListLocation)
+
+        var context = ObjCProtocolTraversalContext(subject: .class(name: "Owner"))
+        context.record(resolutionFailure: locationFailure)
+        guard case .unreadableList(let diagnostic) = context.diagnostics.first else {
+            return XCTFail("Expected relative resolution failure in traversal diagnostics")
+        }
+        XCTAssertEqual(diagnostic.subject, .class(name: "Owner"))
+        XCTAssertEqual(diagnostic.listOffset, locationFailure.listOffset)
+        XCTAssertEqual(diagnostic.failure, .invalidRelativeListLocation)
+    }
+
+    func testRelativeCountRejectsValuesBeyondArm64_32IntRange() {
+        XCTAssertEqual(
+            exactRelativeListCount(
+                UInt32(Int32.max),
+                maximumIntValue: UInt64(Int32.max)
+            ),
+            Int(Int32.max)
+        )
+        XCTAssertNil(
+            exactRelativeListCount(
+                UInt32.max,
+                maximumIntValue: UInt64(Int32.max)
+            )
+        )
+    }
+
     func testDiamondGraphPreservesSharedDescendantAndStateResetsAcrossRoots() throws {
         let nodes: [SyntheticGraph.Node] = [
             .init(name: "A", children: [.node(1), .node(2)]),
@@ -216,19 +406,16 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertTrue(secondRoot.diagnostics.isEmpty)
     }
 
-    func testHardLimitProducesOneShallowLeafDiagnostic() throws {
-        let nodes = (0...65).map { index in
+    func testDefaultRecursiveHardLimitProducesOneShallowLeafDiagnostic() throws {
+        let nodes = (0...66).map { index in
             SyntheticGraph.Node(
                 name: "P\(index)",
-                children: index < 65 ? [.node(index + 1)] : []
+                children: index < 66 ? [.node(index + 1)] : []
             )
         }
         let fixture = try SyntheticFileFixture(nodes: nodes)
 
-        let result = fixture.protocols[0].readInfo(
-            in: fixture.machO,
-            options: .init(traversal: .depth(65), referencedProtocolInfo: .full)
-        )
+        let result = fixture.protocols[0].readInfo(in: fixture.machO)
         var current = try XCTUnwrap(result.value)
         var traversedNames: [String] = []
         while let child = current.protocols.first {
@@ -237,12 +424,33 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
         XCTAssertEqual(traversedNames.count, 65)
         XCTAssertEqual(traversedNames.last, "P65")
+        XCTAssertEqual(current.name, "P65")
+        XCTAssertEqual(current.protocols, [], "The cutoff node has P66 in raw metadata but must be shallow")
         XCTAssertEqual(result.diagnostics.count, 1)
         guard case .recursionLimit(let diagnostic) = result.diagnostics[0] else {
             return XCTFail("Expected recursion-limit diagnostic")
         }
         XCTAssertEqual(diagnostic.maximumDepth, 64)
         XCTAssertEqual(diagnostic.protocolPath.count, 66)
+        XCTAssertEqual(diagnostic.protocolPath.last, "P65")
+    }
+
+    func testDepthAboveHardLimitAlsoProducesShallowLeafDiagnostic() throws {
+        let nodes = (0...66).map { index in
+            SyntheticGraph.Node(
+                name: "P\(index)",
+                children: index < 66 ? [.node(index + 1)] : []
+            )
+        }
+        let fixture = try SyntheticFileFixture(nodes: nodes)
+        let result = fixture.protocols[0].readInfo(
+            in: fixture.machO,
+            options: .init(traversal: .depth(65), referencedProtocolInfo: .full)
+        )
+        XCTAssertEqual(result.diagnostics.count, 1)
+        guard case .recursionLimit(let diagnostic) = result.diagnostics[0] else {
+            return XCTFail("Expected recursion-limit diagnostic")
+        }
         XCTAssertEqual(diagnostic.protocolPath.last, "P65")
     }
 
@@ -307,6 +515,151 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertEqual(imageResult.diagnostics.count, 1)
     }
 
+    func testUnreadableRegularListHeaderReachesTypedDiagnostics() throws {
+        let fixture = try SyntheticFileFixture(nodes: [.init(name: "A")])
+        let original = fixture.protocols[0].layout
+        let protocolWithUnreadableList = ObjCProtocol64(
+            layout: .init(
+                isa: original.isa,
+                mangledName: original.mangledName,
+                protocols: SyntheticGraph.fileVMAddress + UInt64(SyntheticGraph.fileSize - 4),
+                instanceMethods: original.instanceMethods,
+                classMethods: original.classMethods,
+                optionalInstanceMethods: original.optionalInstanceMethods,
+                optionalClassMethods: original.optionalClassMethods,
+                instanceProperties: original.instanceProperties,
+                size: original.size,
+                flags: original.flags,
+                _extendedMethodTypes: original._extendedMethodTypes,
+                _demangledName: original._demangledName,
+                _classProperties: original._classProperties
+            ),
+            offset: fixture.protocols[0].offset
+        )
+
+        let result = protocolWithUnreadableList.readInfo(in: fixture.machO)
+        XCTAssertEqual(result.value?.protocols, [])
+        guard case .unreadableList(let diagnostic) = result.diagnostics.first else {
+            return XCTFail("Expected regular-header diagnostic")
+        }
+        guard case .unreadableFileHeader = diagnostic.failure else {
+            return XCTFail("Expected unreadable file header, got \(diagnostic.failure)")
+        }
+    }
+
+    func testClassAndCategoryListResolutionFailuresKeepSubjectAttribution() throws {
+        let unreadablePointer = SyntheticGraph.fileVMAddress + UInt64(SyntheticGraph.fileSize - 4)
+        let fixture = try SyntheticFileFixture(
+            nodes: [.init(name: "A")],
+            classProtocolPointerOverride: unreadablePointer,
+            categoryProtocolPointerOverride: unreadablePointer
+        )
+
+        let classResult = fixture.objcClass.readInfo(in: fixture.machO)
+        guard case .unreadableList(let classDiagnostic) = classResult.diagnostics.first else {
+            return XCTFail("Expected class list-resolution diagnostic")
+        }
+        XCTAssertEqual(classDiagnostic.subject, .class(name: "FixtureClass"))
+        guard case .unreadableFileHeader = classDiagnostic.failure else {
+            return XCTFail("Unexpected class failure: \(classDiagnostic.failure)")
+        }
+
+        let categoryResult = fixture.category.readInfo(in: fixture.machO)
+        guard case .unreadableList(let categoryDiagnostic) = categoryResult.diagnostics.first else {
+            return XCTFail("Expected category list-resolution diagnostic")
+        }
+        XCTAssertEqual(
+            categoryDiagnostic.subject,
+            .category(className: "FixtureClass", name: "FixtureCategory")
+        )
+        guard case .unreadableFileHeader = categoryDiagnostic.failure else {
+            return XCTFail("Unexpected category failure: \(categoryDiagnostic.failure)")
+        }
+    }
+
+    func testRelativeListMissingImageIndexReachesReadInfoDiagnostics() throws {
+        let relativePointer = (SyntheticGraph.fileVMAddress + 0xA00) | 1
+        let fixture = try SyntheticFileFixture(
+            nodes: [.init(name: "A")],
+            classProtocolPointerOverride: relativePointer
+        )
+        let result = fixture.objcClass.readInfo(in: fixture.machO)
+        guard case .unreadableList(let diagnostic) = result.diagnostics.first else {
+            return XCTFail("Expected relative-list diagnostic")
+        }
+        XCTAssertEqual(diagnostic.subject, .class(name: "FixtureClass"))
+        XCTAssertEqual(diagnostic.failure, .missingRelativeImageIndex)
+    }
+
+    func testMissingRootIdentityIsDiagnosedAndStopsReferences() throws {
+        let file = try SyntheticFileFixture(
+            nodes: [.init(name: "A", children: [.node(0)])]
+        )
+        let invalidFileProtocol = ObjCProtocol64(
+            layout: file.protocols[0].layout,
+            offset: -1
+        )
+        let fileResult = invalidFileProtocol.readInfo(in: file.machO)
+        XCTAssertEqual(fileResult.value?.protocols, [])
+        guard case .invalidIdentity(let fileDiagnostic) = fileResult.diagnostics.first else {
+            return XCTFail("Expected missing file identity diagnostic")
+        }
+        XCTAssertEqual(fileDiagnostic.protocolOffset, -1)
+
+        let image = SyntheticImageFixture(
+            nodes: [.init(name: "A", children: [.node(0)])]
+        )
+        let invalidImageProtocol = ObjCProtocol64(
+            layout: image.protocols[0].layout,
+            offset: .min
+        )
+        let imageResult = invalidImageProtocol.readInfo(in: image.machO)
+        XCTAssertEqual(imageResult.value?.protocols, [])
+        guard case .invalidIdentity = imageResult.diagnostics.first else {
+            return XCTFail("Expected missing image identity diagnostic")
+        }
+    }
+
+    func testStableIdentitiesDistinguishObjectsAndSurviveReconstructedSources() throws {
+        let fixture = try SyntheticFileFixture(nodes: [.init(name: "Same"), .init(name: "Same")])
+        let reconstructed = try MachOFile(url: fixture.url)
+        XCTAssertEqual(
+            fixture.machO.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 0)),
+            reconstructed.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 0))
+        )
+        XCTAssertNotEqual(
+            fixture.machO.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 0)),
+            fixture.machO.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 1))
+        )
+        let firstObject = try XCTUnwrap(
+            fixture.machO.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 0))
+        )
+        let sameNameOtherOffset = try XCTUnwrap(
+            fixture.machO.traversalIdentity(protocolOffset: SyntheticGraph.protocolOffset(for: 1))
+        )
+        var distinctObjectContext = ObjCProtocolTraversalContext(
+            subject: .protocol(name: "Same"),
+            rootProtocol: (firstObject, "Same")
+        )
+        XCTAssertEqual(
+            distinctObjectContext.decision(for: sameNameOtherOffset, name: "Same"),
+            .descend
+        )
+
+        let uuid = UUID()
+        let firstWrapperIdentity = ObjCProtocolIdentity.cache(uuid: uuid, unslidAddress: 0x1234)
+        let reopenedSubcacheIdentity = ObjCProtocolIdentity.cache(uuid: uuid, unslidAddress: 0x1234)
+        var context = ObjCProtocolTraversalContext(
+            subject: .protocol(name: "Same"),
+            rootProtocol: (firstWrapperIdentity, "Same")
+        )
+        XCTAssertEqual(
+            context.decision(for: reopenedSubcacheIdentity, name: "Same"),
+            .shallowCycle
+        )
+        XCTAssertEqual(context.diagnostics.count, 1)
+    }
+
     private func assertTableFailure<Source, Protocol>(
         _ outcome: ObjCProtocolListReadOutcome<Source, Protocol>,
         matches: (ObjCProtocolListTableFailure) -> Bool,
@@ -361,21 +714,25 @@ private enum SyntheticGraph {
         let name: String
         let children: [Child]
         let declaredCount: UInt64?
+        let objectOffsetAdjustment: Int
 
         init(
             name: String,
             children: [Child] = [],
-            declaredCount: UInt64? = nil
+            declaredCount: UInt64? = nil,
+            objectOffsetAdjustment: Int = 0
         ) {
             self.name = name
             self.children = children
             self.declaredCount = declaredCount
+            self.objectOffsetAdjustment = objectOffsetAdjustment
         }
     }
 
     struct Built {
         let data: Data
         let protocolLayouts: [ObjCProtocol64.Layout]
+        let protocolOffsets: [Int]
         let classLayout: ObjCClass64.Layout
         let categoryLayout: ObjCCategory64.Layout
     }
@@ -391,7 +748,9 @@ private enum SyntheticGraph {
     static func build(
         nodes: [Node],
         pointerBase: UInt64,
-        segmentVMAddress: UInt64
+        segmentVMAddress: UInt64,
+        classProtocolPointerOverride: UInt64? = nil,
+        categoryProtocolPointerOverride: UInt64? = nil
     ) -> Built {
         precondition(nodes.count <= 70)
         var data = Data(count: fileSize)
@@ -424,6 +783,9 @@ private enum SyntheticGraph {
         data.storeCString("FixtureCategory", at: categoryNameOffset)
 
         var protocolLayouts: [ObjCProtocol64.Layout] = []
+        let protocolOffsets = nodes.enumerated().map { index, node in
+            protocolOffset(for: index) + node.objectOffsetAdjustment
+        }
         for (index, node) in nodes.enumerated() {
             let nameOffset = nameBaseOffset + nameStride * index
             data.storeCString(node.name, at: nameOffset)
@@ -435,7 +797,7 @@ private enum SyntheticGraph {
                 let pointer: UInt64
                 switch child {
                 case .node(let target):
-                    pointer = address(protocolOffset(for: target))
+                    pointer = address(protocolOffsets[target])
                 case .invalid:
                     pointer = 0xDEAD_BEEF
                 case .offset(let offset):
@@ -464,7 +826,7 @@ private enum SyntheticGraph {
                 _classProperties: 0
             )
             protocolLayouts.append(layout)
-            data.store(layout, at: protocolOffset(for: index))
+            data.store(layout, at: protocolOffsets[index])
         }
 
         data.store(
@@ -472,7 +834,7 @@ private enum SyntheticGraph {
             at: classProtocolListOffset
         )
         data.store(
-            nodes.isEmpty ? UInt64(0) : address(protocolOffset(for: 0)),
+            nodes.isEmpty ? UInt64(0) : address(protocolOffsets[0]),
             at: classProtocolListOffset + MemoryLayout<ObjCProtocolListHeader64>.size
         )
         data.store(
@@ -480,7 +842,7 @@ private enum SyntheticGraph {
             at: categoryProtocolListOffset
         )
         data.store(
-            nodes.isEmpty ? UInt64(0) : address(protocolOffset(for: 0)),
+            nodes.isEmpty ? UInt64(0) : address(protocolOffsets[0]),
             at: categoryProtocolListOffset + MemoryLayout<ObjCProtocolListHeader64>.size
         )
 
@@ -492,7 +854,8 @@ private enum SyntheticGraph {
             ivarLayout: 0,
             name: address(classNameOffset),
             baseMethods: 0,
-            baseProtocols: nodes.isEmpty ? 0 : address(classProtocolListOffset),
+            baseProtocols: classProtocolPointerOverride
+                ?? (nodes.isEmpty ? 0 : address(classProtocolListOffset)),
             ivars: 0,
             weakIvarLayout: 0,
             baseProperties: 0
@@ -537,7 +900,8 @@ private enum SyntheticGraph {
             cls: address(classOffset),
             instanceMethods: 0,
             classMethods: 0,
-            protocols: nodes.isEmpty ? 0 : address(categoryProtocolListOffset),
+            protocols: categoryProtocolPointerOverride
+                ?? (nodes.isEmpty ? 0 : address(categoryProtocolListOffset)),
             instanceProperties: 0,
             _classProperties: 0
         )
@@ -546,6 +910,7 @@ private enum SyntheticGraph {
         return .init(
             data: data,
             protocolLayouts: protocolLayouts,
+            protocolOffsets: protocolOffsets,
             classLayout: classLayout,
             categoryLayout: categoryLayout
         )
@@ -636,13 +1001,19 @@ private final class SyntheticFileFixture {
     let protocols: [ObjCProtocol64]
     let objcClass: ObjCClass64
     let category: ObjCCategory64
-    private let url: URL
+    let url: URL
 
-    init(nodes: [SyntheticGraph.Node]) throws {
+    init(
+        nodes: [SyntheticGraph.Node],
+        classProtocolPointerOverride: UInt64? = nil,
+        categoryProtocolPointerOverride: UInt64? = nil
+    ) throws {
         let built = SyntheticGraph.build(
             nodes: nodes,
             pointerBase: SyntheticGraph.fileVMAddress,
-            segmentVMAddress: SyntheticGraph.fileVMAddress
+            segmentVMAddress: SyntheticGraph.fileVMAddress,
+            classProtocolPointerOverride: classProtocolPointerOverride,
+            categoryProtocolPointerOverride: categoryProtocolPointerOverride
         )
         self.data = built.data
         self.url = FileManager.default.temporaryDirectory
@@ -650,7 +1021,7 @@ private final class SyntheticFileFixture {
         try built.data.write(to: url)
         self.machO = try MachOFile(url: url)
         self.protocols = built.protocolLayouts.enumerated().map { index, layout in
-            ObjCProtocol64(layout: layout, offset: SyntheticGraph.protocolOffset(for: index))
+            ObjCProtocol64(layout: layout, offset: built.protocolOffsets[index])
         }
         self.objcClass = ObjCClass64(
             layout: built.classLayout,
@@ -691,7 +1062,7 @@ private final class SyntheticImageFixture {
             ptr: storage.assumingMemoryBound(to: mach_header.self)
         )
         self.protocols = built.protocolLayouts.enumerated().map { index, layout in
-            ObjCProtocol64(layout: layout, offset: SyntheticGraph.protocolOffset(for: index))
+            ObjCProtocol64(layout: layout, offset: built.protocolOffsets[index])
         }
         self.objcClass = ObjCClass64(
             layout: built.classLayout,
@@ -709,6 +1080,195 @@ private final class SyntheticImageFixture {
     }
 }
 
+private final class SyntheticReadableImageFixture {
+    let machO: MachOImage
+    let tableOffset = 0x100
+    private let storage: UnsafeMutableRawPointer
+
+    init() {
+        let tableBytes = (ObjCProtocolReadLimits.maximumLoadedListEntries + 1)
+            * MemoryLayout<UInt64>.size
+        let byteCount = tableOffset + MemoryLayout<ObjCProtocolListHeader64>.size + tableBytes
+        let allocatedStorage = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)
+        self.storage = allocatedStorage
+        allocatedStorage.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+
+        var header = mach_header_64()
+        header.magic = UInt32(MH_MAGIC_64)
+        Swift.withUnsafeBytes(of: &header) { bytes in
+            allocatedStorage.copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+        }
+        self.machO = MachOImage(ptr: allocatedStorage.assumingMemoryBound(to: mach_header.self))
+    }
+
+    deinit {
+        storage.deallocate()
+    }
+}
+
+private final class SyntheticNegativeImageFixture {
+    let machO: MachOImage
+    let list64: ObjCProtocolList64
+    let relative64: ObjCProtocolRelativeListList64
+    let relative32: ObjCProtocolRelativeListList32
+    let listOffset = -0x800
+    private let storage: UnsafeMutableRawPointer
+
+    init() {
+        let byteCount = 0x4000
+        let machOOffset = 0x1000
+        let listStorageOffset = 0x800
+        let relativeStorageOffset = 0x600
+        let protocolStorageOffset = 0x1800
+        let nameStorageOffset = 0x1900
+        self.storage = .allocate(byteCount: byteCount, alignment: 16)
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+
+        let storageAddress = UInt64(UInt(bitPattern: storage))
+        let machOPointer = storage.advanced(by: machOOffset)
+        var header = mach_header_64()
+        header.magic = UInt32(MH_MAGIC_64)
+        header.cputype = CPU_TYPE_ARM64
+        header.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        header.filetype = UInt32(MH_DYLIB)
+        header.ncmds = 1
+        header.sizeofcmds = UInt32(MemoryLayout<segment_command_64>.size)
+        machOPointer.storeUnaligned(header)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = UInt32(MemoryLayout<segment_command_64>.size)
+        segment.vmaddr = storageAddress
+        segment.vmsize = UInt64(byteCount)
+        segment.fileoff = 0
+        segment.filesize = UInt64(byteCount)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        machOPointer.advanced(by: MemoryLayout<mach_header_64>.size).storeUnaligned(segment)
+
+        storage.advanced(by: nameStorageOffset).storeBytes(Array("Before".utf8) + [0])
+        let protocolLayout = ObjCProtocol64.Layout(
+            isa: 0,
+            mangledName: storageAddress + UInt64(nameStorageOffset),
+            protocols: 0,
+            instanceMethods: 0,
+            classMethods: 0,
+            optionalInstanceMethods: 0,
+            optionalClassMethods: 0,
+            instanceProperties: 0,
+            size: UInt32(MemoryLayout<ObjCProtocol64.Layout>.size),
+            flags: 0,
+            _extendedMethodTypes: 0,
+            _demangledName: 0,
+            _classProperties: 0
+        )
+        storage.advanced(by: protocolStorageOffset).storeUnaligned(protocolLayout)
+
+        let listPointer = storage.advanced(by: listStorageOffset)
+        listPointer.storeUnaligned(ObjCProtocolListHeader64(_count: 1))
+        listPointer.advanced(by: MemoryLayout<ObjCProtocolListHeader64>.size).storeUnaligned(
+            storageAddress + UInt64(protocolStorageOffset)
+        )
+
+        let relativePointer = storage.advanced(by: relativeStorageOffset)
+        let advertisedStride = MemoryLayout<RelativeListListEntry.Layout>.size + 8
+        relativePointer.storeUnaligned(
+            EntrySizeListHeader(
+                layout: .init(
+                    entsizeAndFlags: UInt32(advertisedStride),
+                    count: 1
+                )
+            )
+        )
+        let entryAddress = relativeStorageOffset + MemoryLayout<EntrySizeListHeader>.size
+        var entryLayout = RelativeListListEntry.Layout()
+        entryLayout.imageIndex = 1
+        entryLayout.listOffset = Int64(listStorageOffset - entryAddress)
+        relativePointer.advanced(by: MemoryLayout<EntrySizeListHeader>.size).storeUnaligned(entryLayout)
+
+        self.machO = MachOImage(
+            ptr: machOPointer.assumingMemoryBound(to: mach_header.self)
+        )
+        self.list64 = ObjCProtocolList64(ptr: listPointer, offset: listOffset)
+        self.relative64 = ObjCProtocolRelativeListList64(
+            ptr: relativePointer,
+            offset: relativeStorageOffset - machOOffset
+        )
+        self.relative32 = ObjCProtocolRelativeListList32(
+            ptr: relativePointer,
+            offset: relativeStorageOffset - machOOffset
+        )
+    }
+
+    deinit {
+        storage.deallocate()
+    }
+}
+
+private final class SyntheticRelativeFileFixture {
+    let machO: MachOFile
+    let relative64: ObjCProtocolRelativeListList64
+    let relative32: ObjCProtocolRelativeListList32
+    let relativeOffset = 0x100
+    let regularListOffset = 0x300
+    private let url: URL
+
+    init() throws {
+        let fileSize = 0x1000
+        let vmAddress: UInt64 = 0x2000_0000
+        var data = Data(count: fileSize)
+
+        var machHeader = mach_header_64()
+        machHeader.magic = UInt32(MH_MAGIC_64)
+        machHeader.cputype = CPU_TYPE_ARM64
+        machHeader.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        machHeader.filetype = UInt32(MH_DYLIB)
+        machHeader.ncmds = 1
+        machHeader.sizeofcmds = UInt32(MemoryLayout<segment_command_64>.size)
+        data.store(machHeader, at: 0)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = UInt32(MemoryLayout<segment_command_64>.size)
+        segment.vmaddr = vmAddress
+        segment.vmsize = UInt64(fileSize)
+        segment.fileoff = 0
+        segment.filesize = UInt64(fileSize)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        data.store(segment, at: MemoryLayout<mach_header_64>.size)
+
+        let stride = MemoryLayout<RelativeListListEntry.Layout>.size + 8
+        let relativeHeader = EntrySizeListHeader(
+            layout: .init(entsizeAndFlags: UInt32(stride), count: 1)
+        )
+        data.store(relativeHeader, at: relativeOffset)
+        let entryOffset = relativeOffset + MemoryLayout<EntrySizeListHeader>.size
+        var entry = RelativeListListEntry.Layout()
+        entry.imageIndex = 1
+        entry.listOffset = Int64(regularListOffset - entryOffset)
+        data.store(entry, at: entryOffset)
+        data.store(ObjCProtocolListHeader64(_count: 0), at: regularListOffset)
+
+        self.url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MachOObjCSection-relative-\(UUID().uuidString)")
+        try data.write(to: url)
+        self.machO = try MachOFile(url: url)
+        self.relative64 = ObjCProtocolRelativeListList64(
+            offset: relativeOffset,
+            header: relativeHeader
+        )
+        self.relative32 = ObjCProtocolRelativeListList32(
+            offset: relativeOffset,
+            header: relativeHeader
+        )
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
 private extension Data {
     mutating func store<Value>(_ value: Value, at offset: Int) {
         var value = value
@@ -720,5 +1280,20 @@ private extension Data {
     mutating func storeCString(_ value: String, at offset: Int) {
         let bytes = Array(value.utf8) + [0]
         replaceSubrange(offset..<(offset + bytes.count), with: bytes)
+    }
+}
+
+private extension UnsafeMutableRawPointer {
+    func storeUnaligned<Value>(_ value: Value) {
+        var value = value
+        Swift.withUnsafeBytes(of: &value) { bytes in
+            copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+        }
+    }
+
+    func storeBytes(_ bytes: [UInt8]) {
+        bytes.withUnsafeBytes { buffer in
+            copyMemory(from: buffer.baseAddress!, byteCount: buffer.count)
+        }
     }
 }
