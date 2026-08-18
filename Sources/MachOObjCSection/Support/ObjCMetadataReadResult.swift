@@ -117,16 +117,10 @@ public enum ObjCProtocolDiagnostic: Sendable, Equatable {
             /// A relative-list header advertises an entry stride smaller than its layout.
             case invalidRelativeEntrySize(advertised: UInt32, minimum: Int)
 
-            /// The current image has no stable dyld-cache image index.
-            case missingRelativeImageIndex
-
-            /// No relative-list entry belongs to the requested cache image index.
-            case relativeEntryNotFound(imageIndex: Int)
-
             /// A relative-list entry cannot be mapped to its file/cache location.
             case invalidRelativeListLocation
 
-            /// A loaded relative-list entry names an unavailable cache image.
+            /// A relative-list entry's load state or loaded cache image is unavailable.
             case relativeImageUnavailable(imageIndex: Int)
 
             /// Multiplying the element count by pointer size overflowed.

@@ -27,32 +27,9 @@ extension MachOImage {
 extension MachOImage.ObjectiveC {
     public var isLoaded: Bool {
         guard let cache: DyldCacheLoaded = .current else { return true } // FIXME: check
-
-        func _isLoaded(
-            rw: some ObjCHeaderOptimizationRWProtocol,
-            ro: some ObjCHeaderOptimizationROProtocol
-        ) -> Bool {
-            let headerInfos = rw.headerInfos(in: cache)
-            guard let info = ro.headerInfo(in: cache, for: machO) else {
-                return false
-            }
-            let imageIndex = info.index
-            if 0 <= imageIndex, imageIndex < headerInfos.count {
-                return headerInfos[AnyIndex(imageIndex)].isLoaded
-            }
-            return false
-        }
-
-        if machO.is64Bit,
-           let rw = cache.headerOptimizationRW64,
-           let ro = cache.headerOptimizationRO64 {
-            return _isLoaded(rw: rw, ro: ro)
-        } else if let rw = cache.headerOptimizationRW32,
-                  let ro = cache.headerOptimizationRO32 {
-            return _isLoaded(rw: rw, ro: ro)
-        }
-
-        return false
+        guard let imageIndex = machO.objcImageIndex else { return false }
+        guard case .loaded = cache.objcImageLoadState(at: imageIndex) else { return false }
+        return true
     }
 }
 #endif

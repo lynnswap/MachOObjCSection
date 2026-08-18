@@ -9,6 +9,12 @@
 import Foundation
 import MachOKit
 
+internal enum ObjCImageLoadState {
+    case loaded
+    case unloaded
+    case unavailable
+}
+
 #if !canImport(Darwin)
 extension DyldCacheLoaded {
     // FIXME: fallback for linux
@@ -130,6 +136,32 @@ extension DyldCacheLoaded {
             return oldObjcOptimization.headerOptimizationRW32(in: self)
         }
         return nil
+    }
+
+    func objcImageLoadState(at index: Int) -> ObjCImageLoadState {
+        func loadedBit(
+            in rw: some ObjCHeaderOptimizationRWProtocol,
+            minimumEntrySize: Int
+        ) -> Bool? {
+            guard rw.entrySize >= minimumEntrySize else { return nil }
+            let headerInfos = rw.headerInfos(in: self)
+            guard 0 <= index, index < headerInfos.count else { return nil }
+            return headerInfos[AnyIndex(index)].isLoaded
+        }
+
+        let loaded: Bool?
+        if let rw = headerOptimizationRW64 {
+            loaded = loadedBit(in: rw, minimumEntrySize: ObjCHeaderInfoRW64.layoutSize)
+        } else if let rw = headerOptimizationRW32 {
+            loaded = loadedBit(in: rw, minimumEntrySize: ObjCHeaderInfoRW32.layoutSize)
+        } else {
+            loaded = nil
+        }
+        switch loaded {
+        case true: return .loaded
+        case false: return .unloaded
+        case nil: return .unavailable
+        }
     }
 }
 

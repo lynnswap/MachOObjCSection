@@ -11,15 +11,15 @@ internal struct ObjCProtocolListResolutionFailure: Error, Equatable {
     let failure: ObjCProtocolDiagnostic.UnreadableList.Failure
 }
 
-internal enum ObjCProtocolListResolution<Source, List> {
-    case absent
+internal enum ObjCProtocolListResolutionEntry<Source, List> {
     case resolved(Source, List)
     case failure(ObjCProtocolListResolutionFailure)
+}
 
-    var value: (Source, List)? {
-        guard case let .resolved(source, list) = self else { return nil }
-        return (source, list)
-    }
+internal enum ObjCProtocolListResolution<Source, List> {
+    case absent
+    case failure(ObjCProtocolListResolutionFailure)
+    case entries([ObjCProtocolListResolutionEntry<Source, List>])
 }
 
 @inline(__always)
@@ -62,7 +62,7 @@ private func resolveRegularProtocolListFile<List: ObjCProtocolListProtocol, Poin
             )
         )
     }
-    return .resolved(machO, List(offset: listOffset, header: header))
+    return .entries([.resolved(machO, List(offset: listOffset, header: header))])
 }
 
 private func resolveRegularProtocolListImage<List: ObjCProtocolListProtocol, Pointer: FixedWidthInteger>(
@@ -92,7 +92,7 @@ private func resolveRegularProtocolListImage<List: ObjCProtocolListProtocol, Poi
             )
         )
     }
-    return .resolved(machO, List(ptr: pointer, offset: listOffset))
+    return .entries([.resolved(machO, List(ptr: pointer, offset: listOffset))])
 }
 
 extension ObjCProtocolProtocol {
@@ -146,9 +146,8 @@ extension ObjCCategoryProtocol {
 }
 
 extension ObjCClassRODataProtocol {
-    internal func protocolListResolution(
-        in machO: MachOFile,
-        imageIndex: @autoclosure () -> Int?
+    internal func protocolListResolutions(
+        in machO: MachOFile
     ) -> ObjCProtocolListResolution<MachOFile, ObjCProtocolList> {
         guard layout.baseProtocols != 0 else { return .absent }
         if layout.baseProtocols & 1 == 0 {
@@ -161,9 +160,6 @@ extension ObjCClassRODataProtocol {
             )
         }
 
-        guard let imageIndex = imageIndex() else {
-            return .failure(.init(listOffset: offset, failure: .missingRelativeImageIndex))
-        }
         var rawPointer = layout.baseProtocols
         rawPointer &= ~1
         guard let fieldOffset = checkedFieldOffset(offset, layoutOffset(of: .baseProtocols)),
@@ -193,12 +189,11 @@ extension ObjCClassRODataProtocol {
             )
         }
         let relative = ObjCProtocolRelativeListList(offset: relativeOffset, header: header)
-        return relative.resolveList(in: machO, forImageIndex: imageIndex)
+        return relative.resolveLists(in: machO)
     }
 
-    internal func protocolListResolution(
-        in machO: MachOImage,
-        imageIndex: @autoclosure () -> Int?
+    internal func protocolListResolutions(
+        in machO: MachOImage
     ) -> ObjCProtocolListResolution<MachOImage, ObjCProtocolList> {
         guard layout.baseProtocols != 0 else { return .absent }
         if layout.baseProtocols & 1 == 0 {
@@ -210,9 +205,6 @@ extension ObjCClassRODataProtocol {
             )
         }
 
-        guard let imageIndex = imageIndex() else {
-            return .failure(.init(listOffset: offset, failure: .missingRelativeImageIndex))
-        }
         let clearedPointer = layout.baseProtocols & ~1
         guard let rawValue = UInt64(exactly: clearedPointer),
               let address = UInt(exactly: machO.stripPointerTags(of: rawValue)),
@@ -238,6 +230,6 @@ extension ObjCClassRODataProtocol {
             )
         }
         let relative = ObjCProtocolRelativeListList(ptr: pointer, offset: relativeOffset)
-        return relative.resolveList(in: machO, forImageIndex: imageIndex)
+        return relative.resolveLists(in: machO)
     }
 }

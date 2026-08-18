@@ -113,7 +113,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
     }
 
-    func testRelativeProtocolListTableFailureReturnsNilWithoutTrapping() throws {
+    func testRelativeProtocolListTableFailureReturnsTypedFailureWithoutTrapping() throws {
         let fixture = try SyntheticFileFixture(nodes: [.init(name: "A")])
         let relative = ObjCProtocolRelativeListList64(
             offset: fixture.data.count - MemoryLayout<EntrySizeListHeader>.size,
@@ -124,7 +124,9 @@ final class ObjCProtocolSafetyTests: XCTestCase {
                 )
             )
         )
-        XCTAssertNil(relative.safelyReadList(in: fixture.machO, forImageIndex: 0))
+        guard case .failure = relative.resolveLists(in: fixture.machO) else {
+            return XCTFail("Expected unreadable relative-list table")
+        }
     }
 
     func testFileProtocolListSkipsOnlyInvalidEntryAndReportsItsIndex() throws {
@@ -452,23 +454,23 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
         XCTAssertEqual(directSuccess.references.map { $0.value.mangledName(in: fixture.machO) }, ["Before"])
 
-        let relative64 = fixture.relative64.resolveList(
+        let relative64 = fixture.relative64.resolveLists(
             in: fixture.machO,
-            forImageIndex: 1,
+            imageLoadResolver: { _ in .loaded },
             imageResolver: { _ in fixture.machO }
         )
-        guard case .resolved(_, let list64) = relative64 else {
+        guard case .some(.resolved(_, let list64)) = relative64.entriesForTesting.first else {
             return XCTFail("Expected negative 64-bit relative-list displacement to resolve")
         }
         XCTAssertEqual(list64.offset, fixture.listOffset)
         XCTAssertEqual(list64.header._count, 1)
 
-        let relative32 = fixture.relative32.resolveList(
+        let relative32 = fixture.relative32.resolveLists(
             in: fixture.machO,
-            forImageIndex: 1,
+            imageLoadResolver: { _ in .loaded },
             imageResolver: { _ in fixture.machO }
         )
-        guard case .resolved(_, let list32) = relative32 else {
+        guard case .some(.resolved(_, let list32)) = relative32.entriesForTesting.first else {
             return XCTFail("Expected negative 32-bit relative-list displacement to resolve")
         }
         XCTAssertEqual(list32.offset, fixture.listOffset)
@@ -485,25 +487,192 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             )
         }
 
-        let result64 = fixture.relative64.resolveList(
+        let result64 = fixture.relative64.resolveLists(
             in: fixture.machO,
-            forImageIndex: 1,
             locationResolver: locationResolver
         )
-        guard case .resolved(_, let list64) = result64 else {
+        guard case .some(.resolved(_, let list64)) = result64.entriesForTesting.first else {
             return XCTFail("Expected 64-bit relative file list")
         }
         XCTAssertEqual(list64.header._count, 0)
 
-        let result32 = fixture.relative32.resolveList(
+        let result32 = fixture.relative32.resolveLists(
             in: fixture.machO,
-            forImageIndex: 1,
             locationResolver: locationResolver
         )
-        guard case .resolved(_, let list32) = result32 else {
+        guard case .some(.resolved(_, let list32)) = result32.entriesForTesting.first else {
             return XCTFail("Expected 32-bit relative file list")
         }
         XCTAssertEqual(list32.header._count, 0)
+    }
+
+    func testRelativeImageListsDoNotRequireOwnerEntryAndSkipUnloadedBeforeDereference() {
+        let fixture = SyntheticRelativeImageCollectionFixture(
+            unreadableEntryIndices: [0, 1, 2, 3]
+        )
+        var loadChecks: [Int] = []
+        var imageResolutions: [Int] = []
+
+        let result = fixture.relative64.resolveLists(
+            in: fixture.machO,
+            imageLoadResolver: { index in
+                loadChecks.append(index)
+                return .unloaded
+            },
+            imageResolver: { index in
+                imageResolutions.append(index)
+                return fixture.machO
+            }
+        )
+
+        XCTAssertEqual(fixture.imageIndices, [199, 1194, 1680, 0])
+        XCTAssertFalse(fixture.imageIndices.contains(54))
+        XCTAssertEqual(loadChecks, fixture.imageIndices)
+        XCTAssertTrue(imageResolutions.isEmpty)
+        XCTAssertTrue(result.entriesForTesting.isEmpty)
+    }
+
+    func testRelativeImageListsPreserveLoadedOrderAndIgnoreUnreadableUnloadedEntries() {
+        let fixture = SyntheticRelativeImageCollectionFixture(
+            unreadableEntryIndices: [0, 2]
+        )
+        var imageResolutions: [Int] = []
+
+        let result = fixture.relative64.resolveLists(
+            in: fixture.machO,
+            imageLoadResolver: { [1194, 0].contains($0) ? .loaded : .unloaded },
+            imageResolver: { index in
+                imageResolutions.append(index)
+                return fixture.machO
+            }
+        )
+
+        XCTAssertEqual(imageResolutions, [1194, 0])
+        XCTAssertEqual(
+            result.entriesForTesting.compactMap { resolution -> UInt64? in
+                guard case .resolved(_, let list) = resolution else { return nil }
+                return list.header._count
+            },
+            [22, 44]
+        )
+        XCTAssertFalse(result.entriesForTesting.contains { resolution in
+            if case .failure = resolution { return true }
+            return false
+        })
+    }
+
+    func testRelativeImageListsKeepDuplicateImageEntriesAndValidSiblingAfterFailure() {
+        let duplicateFixture = SyntheticRelativeImageCollectionFixture(
+            imageIndices: [199, 199],
+            protocolNamesByList: [["P1", "P2"], ["P3"]]
+        )
+        var duplicateImageResolutions: [Int] = []
+        let duplicateResult = duplicateFixture.relative64.resolveLists(
+            in: duplicateFixture.machO,
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { index in
+                duplicateImageResolutions.append(index)
+                return duplicateFixture.machO
+            }
+        )
+        XCTAssertEqual(duplicateImageResolutions, [199, 199])
+        XCTAssertEqual(
+            duplicateResult.entriesForTesting.compactMap { resolution -> UInt64? in
+                guard case .resolved(_, let list) = resolution else { return nil }
+                return list.header._count
+            },
+            [2, 1]
+        )
+        var protocolNames: [String] = []
+        for resolution in duplicateResult.entriesForTesting {
+            guard case .resolved(let source, let list) = resolution,
+                  case .success(let protocols) = list.readProtocols(in: source) else {
+                return XCTFail("Expected each loaded inner protocol list to be readable")
+            }
+            protocolNames.append(
+                contentsOf: protocols.references.compactMap {
+                    $0.value.mangledName(in: $0.source)
+                }
+            )
+        }
+        XCTAssertEqual(protocolNames, ["P1", "P2", "P3"])
+
+        let siblingFixture = SyntheticRelativeImageCollectionFixture(
+            imageIndices: [199, 1194, 1680],
+            listCounts: [11, 22, 33]
+        )
+        let siblingResult = siblingFixture.relative64.resolveLists(
+            in: siblingFixture.machO,
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { index in
+                index == 1194 ? nil : siblingFixture.machO
+            }
+        )
+        XCTAssertEqual(siblingResult.entriesForTesting.count, 3)
+        guard case .resolved(_, let firstList) = siblingResult.entriesForTesting[0],
+              case .failure(let failure) = siblingResult.entriesForTesting[1],
+              case .resolved(_, let lastList) = siblingResult.entriesForTesting[2] else {
+            return XCTFail("Expected resolved, failure, resolved outcomes in table order")
+        }
+        XCTAssertEqual(firstList.header._count, 11)
+        XCTAssertEqual(failure.failure, .relativeImageUnavailable(imageIndex: 1194))
+        XCTAssertEqual(lastList.header._count, 33)
+    }
+
+    func testRelativeImageUnknownLoadStateIsTypedAndDoesNotDropLaterEntry() {
+        let fixture = SyntheticRelativeImageCollectionFixture(
+            imageIndices: [199, 1194],
+            listCounts: [11, 22]
+        )
+        var imageResolutions: [Int] = []
+        let result = fixture.relative64.resolveLists(
+            in: fixture.machO,
+            imageLoadResolver: { $0 == 199 ? .unavailable : .loaded },
+            imageResolver: { index in
+                imageResolutions.append(index)
+                return fixture.machO
+            }
+        )
+
+        XCTAssertEqual(imageResolutions, [1194])
+        guard case .failure(let failure) = result.entriesForTesting[0],
+              case .resolved(_, let list) = result.entriesForTesting[1] else {
+            return XCTFail("Expected unknown state followed by a resolved list")
+        }
+        XCTAssertEqual(failure.failure, .relativeImageUnavailable(imageIndex: 199))
+        XCTAssertEqual(list.header._count, 22)
+    }
+
+    func testRelativeFileListsResolveEveryEntryInOrderWithoutOwnerIndex() throws {
+        let fixture = try SyntheticRelativeFileCollectionFixture()
+        let locationResolver: (MachOFile, RelativeListListEntry) -> ObjCProtocolRelativeFileLocation? = {
+            _, entry in fixture.location(for: entry)
+        }
+
+        let result64 = fixture.relative64.resolveLists(
+            in: fixture.machO,
+            locationResolver: locationResolver
+        )
+        let result32 = fixture.relative32.resolveLists(
+            in: fixture.machO,
+            locationResolver: locationResolver
+        )
+
+        XCTAssertFalse(fixture.imageIndices.contains(54))
+        XCTAssertEqual(
+            result64.entriesForTesting.compactMap { resolution -> UInt64? in
+                guard case .resolved(_, let list) = resolution else { return nil }
+                return list.header._count
+            },
+            [11, 22, 33, 44]
+        )
+        XCTAssertEqual(
+            result32.entriesForTesting.compactMap { resolution -> UInt32? in
+                guard case .resolved(_, let list) = resolution else { return nil }
+                return list.header._count
+            },
+            [11, 22, 33, 44]
+        )
     }
 
     func testRelativeListFailuresRemainTyped() throws {
@@ -518,20 +687,17 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             offset: fixture.relativeOffset,
             header: invalidStrideHeader
         )
-        guard case .failure(let strideFailure) = invalidStride.resolveList(
-            in: fixture.machO,
-            forImageIndex: 1
-        ) else {
+        guard case .failure(let strideFailure) = invalidStride
+            .resolveLists(in: fixture.machO) else {
             return XCTFail("Expected invalid relative stride")
         }
         guard case .invalidRelativeEntrySize = strideFailure.failure else {
             return XCTFail("Unexpected stride failure: \(strideFailure.failure)")
         }
 
-        guard case .failure(let locationFailure) = fixture.relative64.resolveList(
-            in: fixture.machO,
-            forImageIndex: 1
-        ) else {
+        guard case .some(.failure(let locationFailure)) = fixture.relative64
+            .resolveLists(in: fixture.machO)
+            .entriesForTesting.first else {
             return XCTFail("Expected missing relative cache location")
         }
         XCTAssertEqual(locationFailure.failure, .invalidRelativeListLocation)
@@ -557,12 +723,17 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             offset: fileFixture.relativeOffset,
             header: header
         )
-        guard case .failure(let fileFailure) = fileList.resolveList(
+        var fileLocationResolutionCount = 0
+        guard case .failure(let fileFailure) = fileList.resolveLists(
             in: fileFixture.machO,
-            forImageIndex: 1
+            locationResolver: { _, _ in
+                fileLocationResolutionCount += 1
+                return nil
+            }
         ) else {
             return XCTFail("Expected file relative table byte-budget failure")
         }
+        XCTAssertEqual(fileLocationResolutionCount, 0)
         XCTAssertEqual(
             fileFailure.failure,
             .excessiveByteCount(
@@ -576,13 +747,23 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             offset: imageFixture.relative64.offset,
             header: header
         )
-        guard case .failure(let imageFailure) = imageList.resolveList(
+        var imageLoadResolutionCount = 0
+        var imageResolutionCount = 0
+        guard case .failure(let imageFailure) = imageList.resolveLists(
             in: imageFixture.machO,
-            forImageIndex: 1,
-            imageResolver: { _ in imageFixture.machO }
+            imageLoadResolver: { _ in
+                imageLoadResolutionCount += 1
+                return .loaded
+            },
+            imageResolver: { _ in
+                imageResolutionCount += 1
+                return imageFixture.machO
+            }
         ) else {
             return XCTFail("Expected image relative table byte-budget failure")
         }
+        XCTAssertEqual(imageLoadResolutionCount, 0)
+        XCTAssertEqual(imageResolutionCount, 0)
         XCTAssertEqual(
             imageFailure.failure,
             .excessiveByteCount(
@@ -601,10 +782,8 @@ final class ObjCProtocolSafetyTests: XCTestCase {
                 layout: .init(entsizeAndFlags: advertisedStride, count: UInt32.max)
             )
         )
-        guard case .failure(let failure) = relative.resolveList(
-            in: fixture.machO,
-            forImageIndex: 1
-        ) else {
+        guard case .failure(let failure) = relative
+            .resolveLists(in: fixture.machO) else {
             return XCTFail("Expected relative table byte-count overflow")
         }
 #if arch(arm64_32) || arch(arm) || arch(i386)
@@ -632,18 +811,17 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             )
         }
 
-        let result = fixture.relative64.resolveList(
+        let result = fixture.relative64.resolveLists(
             in: fixture.machO,
-            forImageIndex: 1,
             locationResolver: locationResolver
         )
 #if arch(arm64_32) || arch(arm) || arch(i386)
-        guard case .failure(let failure) = result else {
+        guard case .some(.failure(let failure)) = result.entriesForTesting.first else {
             return XCTFail("Expected an unrepresentable 32-bit list offset to fail safely")
         }
         XCTAssertEqual(failure.failure, .invalidRelativeListLocation)
 #else
-        guard case .resolved(_, let list) = result else {
+        guard case .some(.resolved(_, let list)) = result.entriesForTesting.first else {
             return XCTFail("Expected the signed 48-bit displacement to remain intact")
         }
         XCTAssertEqual(
@@ -865,18 +1043,21 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
     }
 
-    func testRelativeListMissingImageIndexReachesReadInfoDiagnostics() throws {
+    func testEmptyRelativeListDoesNotRequireOwnerImageIndex() throws {
         let relativePointer = (SyntheticGraph.fileVMAddress + 0xA00) | 1
         let fixture = try SyntheticFileFixture(
             nodes: [.init(name: "A")],
-            classProtocolPointerOverride: relativePointer
+            classProtocolPointerOverride: relativePointer,
+            classRelativeProtocolListHeader: .init(
+                layout: .init(
+                    entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size),
+                    count: 0
+                )
+            )
         )
         let result = fixture.objcClass.readInfo(in: fixture.machO)
-        guard case .unreadableList(let diagnostic) = result.diagnostics.first else {
-            return XCTFail("Expected relative-list diagnostic")
-        }
-        XCTAssertEqual(diagnostic.subject, .class(name: "FixtureClass"))
-        XCTAssertEqual(diagnostic.failure, .missingRelativeImageIndex)
+        XCTAssertEqual(result.value?.protocols, [])
+        XCTAssertTrue(result.diagnostics.isEmpty, "Unexpected diagnostics: \(result.diagnostics)")
     }
 
     func testMissingRootIdentityIsDiagnosedAndStopsReferences() throws {
@@ -973,6 +1154,13 @@ final class ObjCProtocolSafetyTests: XCTestCase {
     }
 }
 
+private extension ObjCProtocolListResolution {
+    var entriesForTesting: [ObjCProtocolListResolutionEntry<Source, List>] {
+        guard case .entries(let entries) = self else { return [] }
+        return entries
+    }
+}
+
 private enum SyntheticGraph {
     static let fileSize = 0x12000
     static let fileVMAddress: UInt64 = 0x1_0000_0000
@@ -1039,7 +1227,8 @@ private enum SyntheticGraph {
         pointerBase: UInt64,
         segmentVMAddress: UInt64,
         classProtocolPointerOverride: UInt64? = nil,
-        categoryProtocolPointerOverride: UInt64? = nil
+        categoryProtocolPointerOverride: UInt64? = nil,
+        classRelativeProtocolListHeader: EntrySizeListHeader? = nil
     ) -> Built {
         precondition(nodes.count <= 70)
         var data = Data(count: fileSize)
@@ -1166,6 +1355,15 @@ private enum SyntheticGraph {
         )
         data.store(classRO, at: classROOffset)
         data.store(metaRO, at: metaClassROOffset)
+
+        if let classRelativeProtocolListHeader,
+           let taggedPointer = classProtocolPointerOverride {
+            let untaggedPointer = taggedPointer & ~1
+            if untaggedPointer >= pointerBase,
+               let relativeOffset = Int(exactly: untaggedPointer - pointerBase) {
+                data.store(classRelativeProtocolListHeader, at: relativeOffset)
+            }
+        }
 
         let classLayout = ObjCClass64.Layout(
             isa: address(metaClassOffset),
@@ -1345,14 +1543,16 @@ private final class SyntheticFileFixture {
     init(
         nodes: [SyntheticGraph.Node],
         classProtocolPointerOverride: UInt64? = nil,
-        categoryProtocolPointerOverride: UInt64? = nil
+        categoryProtocolPointerOverride: UInt64? = nil,
+        classRelativeProtocolListHeader: EntrySizeListHeader? = nil
     ) throws {
         let built = SyntheticGraph.build(
             nodes: nodes,
             pointerBase: SyntheticGraph.fileVMAddress,
             segmentVMAddress: SyntheticGraph.fileVMAddress,
             classProtocolPointerOverride: classProtocolPointerOverride,
-            categoryProtocolPointerOverride: categoryProtocolPointerOverride
+            categoryProtocolPointerOverride: categoryProtocolPointerOverride,
+            classRelativeProtocolListHeader: classRelativeProtocolListHeader
         )
         self.data = built.data
         self.url = FileManager.default.temporaryDirectory
@@ -1544,6 +1744,136 @@ private final class SyntheticNegativeImageFixture {
     }
 }
 
+private final class SyntheticRelativeImageCollectionFixture {
+    let machO: MachOImage
+    let relative64: ObjCProtocolRelativeListList64
+    let relative32: ObjCProtocolRelativeListList32
+    let imageIndices: [Int]
+    private let storage: UnsafeMutableRawPointer
+
+    init(
+        imageIndices: [Int] = [199, 1194, 1680, 0],
+        listCounts: [UInt64] = [11, 22, 33, 44],
+        unreadableEntryIndices: Set<Int> = [],
+        protocolNamesByList: [[String]]? = nil
+    ) {
+        let effectiveListCounts = protocolNamesByList?.map { UInt64($0.count) } ?? listCounts
+        precondition(imageIndices.count == effectiveListCounts.count)
+
+        let byteCount = 0x8000
+        let relativeStorageOffset = 0x400
+        let firstListStorageOffset = 0x1000
+        let listStorageStride = 0x100
+        let firstProtocolStorageOffset = 0x3000
+        let protocolStorageStride = 0x100
+        let firstNameStorageOffset = 0x6000
+        let nameStorageStride = 0x40
+        let advertisedStride = MemoryLayout<RelativeListListEntry.Layout>.size + 8
+        self.imageIndices = imageIndices
+        self.storage = .allocate(byteCount: byteCount, alignment: 16)
+        storage.initializeMemory(as: UInt8.self, repeating: 0, count: byteCount)
+
+        let storageAddress = UInt64(UInt(bitPattern: storage))
+        var header = mach_header_64()
+        header.magic = UInt32(MH_MAGIC_64)
+        header.cputype = CPU_TYPE_ARM64
+        header.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        header.filetype = UInt32(MH_DYLIB)
+        header.ncmds = 1
+        header.sizeofcmds = UInt32(MemoryLayout<segment_command_64>.size)
+        storage.storeUnaligned(header)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = UInt32(MemoryLayout<segment_command_64>.size)
+        segment.vmaddr = storageAddress
+        segment.vmsize = UInt64(byteCount)
+        segment.fileoff = 0
+        segment.filesize = UInt64(byteCount)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        storage.advanced(by: MemoryLayout<mach_header_64>.size).storeUnaligned(segment)
+
+        let relativePointer = storage.advanced(by: relativeStorageOffset)
+        relativePointer.storeUnaligned(
+            EntrySizeListHeader(
+                layout: .init(
+                    entsizeAndFlags: UInt32(advertisedStride),
+                    count: UInt32(imageIndices.count)
+                )
+            )
+        )
+        let tableOffset = relativeStorageOffset + MemoryLayout<EntrySizeListHeader>.size
+        for index in imageIndices.indices {
+            let entryOffset = tableOffset + index * advertisedStride
+            let listStorageOffset = firstListStorageOffset + index * listStorageStride
+            var entry = RelativeListListEntry.Layout()
+            entry.imageIndex = numericCast(imageIndices[index])
+            if unreadableEntryIndices.contains(index) {
+                entry.listOffset = Int64(0x10_0000 - entryOffset)
+            } else {
+                entry.listOffset = Int64(listStorageOffset - entryOffset)
+                storage.advanced(by: listStorageOffset).storeUnaligned(
+                    ObjCProtocolListHeader64(_count: effectiveListCounts[index])
+                )
+            }
+            relativePointer
+                .advanced(by: MemoryLayout<EntrySizeListHeader>.size + index * advertisedStride)
+                .storeUnaligned(entry)
+        }
+
+        if let protocolNamesByList {
+            var protocolIndex = 0
+            for (listIndex, names) in protocolNamesByList.enumerated() {
+                let listStorageOffset = firstListStorageOffset + listIndex * listStorageStride
+                for (nameIndex, name) in names.enumerated() {
+                    let protocolStorageOffset = firstProtocolStorageOffset
+                        + protocolIndex * protocolStorageStride
+                    let nameStorageOffset = firstNameStorageOffset + protocolIndex * nameStorageStride
+                    storage.advanced(by: nameStorageOffset).storeBytes(Array(name.utf8) + [0])
+                    storage.advanced(by: protocolStorageOffset).storeUnaligned(
+                        ObjCProtocol64.Layout(
+                            isa: 0,
+                            mangledName: storageAddress + UInt64(nameStorageOffset),
+                            protocols: 0,
+                            instanceMethods: 0,
+                            classMethods: 0,
+                            optionalInstanceMethods: 0,
+                            optionalClassMethods: 0,
+                            instanceProperties: 0,
+                            size: UInt32(MemoryLayout<ObjCProtocol64.Layout>.size),
+                            flags: 0,
+                            _extendedMethodTypes: 0,
+                            _demangledName: 0,
+                            _classProperties: 0
+                        )
+                    )
+                    storage.advanced(
+                        by: listStorageOffset
+                            + MemoryLayout<ObjCProtocolListHeader64>.size
+                            + nameIndex * MemoryLayout<UInt64>.size
+                    ).storeUnaligned(storageAddress + UInt64(protocolStorageOffset))
+                    protocolIndex += 1
+                }
+            }
+        }
+
+        self.machO = MachOImage(ptr: storage.assumingMemoryBound(to: mach_header.self))
+        self.relative64 = ObjCProtocolRelativeListList64(
+            ptr: relativePointer,
+            offset: relativeStorageOffset
+        )
+        self.relative32 = ObjCProtocolRelativeListList32(
+            ptr: relativePointer,
+            offset: relativeStorageOffset
+        )
+    }
+
+    deinit {
+        storage.deallocate()
+    }
+}
+
 private final class SyntheticRelativeFileFixture {
     let machO: MachOFile
     let relative64: ObjCProtocolRelativeListList64
@@ -1601,6 +1931,95 @@ private final class SyntheticRelativeFileFixture {
             offset: relativeOffset,
             header: relativeHeader
         )
+    }
+
+    deinit {
+        try? FileManager.default.removeItem(at: url)
+    }
+}
+
+private final class SyntheticRelativeFileCollectionFixture {
+    let machO: MachOFile
+    let relative64: ObjCProtocolRelativeListList64
+    let relative32: ObjCProtocolRelativeListList32
+    let imageIndices: [Int]
+    private let url: URL
+
+    init(
+        imageIndices: [Int] = [199, 1194, 1680, 0],
+        listCounts: [UInt64] = [11, 22, 33, 44]
+    ) throws {
+        precondition(imageIndices.count == listCounts.count)
+
+        let fileSize = 0x2000
+        let vmAddress: UInt64 = 0x2000_0000
+        let relativeOffset = 0x100
+        let firstListOffset = 0x1000
+        let listStride = 0x100
+        let advertisedStride = MemoryLayout<RelativeListListEntry.Layout>.size + 8
+        var data = Data(count: fileSize)
+
+        var machHeader = mach_header_64()
+        machHeader.magic = UInt32(MH_MAGIC_64)
+        machHeader.cputype = CPU_TYPE_ARM64
+        machHeader.cpusubtype = CPU_SUBTYPE_ARM64_ALL
+        machHeader.filetype = UInt32(MH_DYLIB)
+        machHeader.ncmds = 1
+        machHeader.sizeofcmds = UInt32(MemoryLayout<segment_command_64>.size)
+        data.store(machHeader, at: 0)
+
+        var segment = segment_command_64()
+        segment.cmd = UInt32(LC_SEGMENT_64)
+        segment.cmdsize = UInt32(MemoryLayout<segment_command_64>.size)
+        segment.vmaddr = vmAddress
+        segment.vmsize = UInt64(fileSize)
+        segment.fileoff = 0
+        segment.filesize = UInt64(fileSize)
+        segment.maxprot = VM_PROT_READ
+        segment.initprot = VM_PROT_READ
+        data.store(segment, at: MemoryLayout<mach_header_64>.size)
+
+        let relativeHeader = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(advertisedStride),
+                count: UInt32(imageIndices.count)
+            )
+        )
+        data.store(relativeHeader, at: relativeOffset)
+        let tableOffset = relativeOffset + MemoryLayout<EntrySizeListHeader>.size
+        for index in imageIndices.indices {
+            let entryOffset = tableOffset + index * advertisedStride
+            let listOffset = firstListOffset + index * listStride
+            var entry = RelativeListListEntry.Layout()
+            entry.imageIndex = numericCast(imageIndices[index])
+            entry.listOffset = Int64(listOffset - entryOffset)
+            data.store(entry, at: entryOffset)
+            data.store(ObjCProtocolListHeader64(_count: listCounts[index]), at: listOffset)
+        }
+
+        self.url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MachOObjCSection-relative-collection-\(UUID().uuidString)")
+        try data.write(to: url)
+        self.machO = try MachOFile(url: url)
+        self.relative64 = ObjCProtocolRelativeListList64(
+            offset: relativeOffset,
+            header: relativeHeader
+        )
+        self.relative32 = ObjCProtocolRelativeListList32(
+            offset: relativeOffset,
+            header: relativeHeader
+        )
+        self.imageIndices = imageIndices
+    }
+
+    func location(
+        for entry: RelativeListListEntry
+    ) -> ObjCProtocolRelativeFileLocation? {
+        guard let listOffset = addingSignedDisplacement(entry.signedListOffset, to: entry.offset),
+              let fileOffset = UInt64(exactly: listOffset) else {
+            return nil
+        }
+        return .direct(in: machO, fileOffset: fileOffset)
     }
 
     deinit {

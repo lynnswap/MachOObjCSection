@@ -64,6 +64,15 @@ internal func defaultRelativeImage(at index: Int) -> MachOImage? {
 #endif
 }
 
+internal func defaultRelativeImageLoadState(at index: Int) -> ObjCImageLoadState {
+#if canImport(MachO)
+    guard let cache: DyldCacheLoaded = .current else { return .unavailable }
+    return cache.objcImageLoadState(at: index)
+#else
+    return .unavailable
+#endif
+}
+
 extension ObjCProtocolRelativeListListProtocol {
     private func checkedCountAndStride() -> Result<(count: Int, stride: Int), ObjCProtocolListResolutionFailure> {
         guard let count = exactRelativeListCount(header.count) else {
@@ -101,33 +110,32 @@ extension ObjCProtocolRelativeListListProtocol {
         return .success((count, stride))
     }
 
-    private func checkedEntry(
+    private func checkedEntries(
         layouts: [Entry.Layout],
-        imageIndex: Int,
         stride: Int
-    ) -> Result<Entry, ObjCProtocolListResolutionFailure> {
-        guard let (index, layout) = layouts.enumerated().first(
-            where: { _, layout in Int(layout.imageIndex) == imageIndex }
-        ) else {
-            return .failure(
-                .init(
-                    listOffset: offset,
-                    failure: .relativeEntryNotFound(imageIndex: imageIndex)
-                )
-            )
-        }
+    ) -> Result<[Entry], ObjCProtocolListResolutionFailure> {
         let (baseOffset, baseOverflow) = offset.addingReportingOverflow(MemoryLayout<Header>.size)
-        let (entryDelta, deltaOverflow) = index.multipliedReportingOverflow(by: stride)
-        let (entryOffset, entryOverflow) = baseOffset.addingReportingOverflow(entryDelta)
-        guard !baseOverflow, !deltaOverflow, !entryOverflow else {
+        guard !baseOverflow else {
             return .failure(.init(listOffset: offset, failure: .invalidRelativeListLocation))
         }
-        return .success(Entry(offset: entryOffset, layout: layout))
+
+        var entries: [Entry] = []
+        entries.reserveCapacity(layouts.count)
+        for (index, layout) in layouts.enumerated() {
+            let (entryDelta, deltaOverflow) = index.multipliedReportingOverflow(by: stride)
+            let (entryOffset, entryOverflow) = baseOffset.addingReportingOverflow(entryDelta)
+            guard !deltaOverflow, !entryOverflow else {
+                return .failure(.init(listOffset: offset, failure: .invalidRelativeListLocation))
+            }
+            entries.append(Entry(offset: entryOffset, layout: layout))
+        }
+        return .success(entries)
     }
 
-    internal func resolveList(
+    // File/debug-tool readers have no process load state. Objective-C's own
+    // debug-tool path therefore treats every outer entry as loaded.
+    internal func resolveLists(
         in machO: MachOFile,
-        forImageIndex imageIndex: Int,
         locationResolver: (MachOFile, Entry) -> ObjCProtocolRelativeFileLocation? = defaultRelativeFileLocation
     ) -> ObjCProtocolListResolution<MachOFile, List> {
         guard let listOffset = UInt64(exactly: offset),
@@ -160,50 +168,66 @@ extension ObjCProtocolRelativeListListProtocol {
             return .failure(.init(listOffset: offset, failure: failure.diagnosticFailure))
         }
 
-        let entry: Entry
-        switch checkedEntry(
+        let entries: [Entry]
+        switch checkedEntries(
             layouts: layouts,
-            imageIndex: imageIndex,
             stride: countAndStride.stride
         ) {
-        case .success(let value): entry = value
+        case .success(let value): entries = value
         case .failure(let failure): return .failure(failure)
         }
 
-        guard let location = locationResolver(machO, entry) else {
-            return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
-        }
-        guard let relativeOffset = addingSignedDisplacement(
+        var resolutions: [ObjCProtocolListResolutionEntry<MachOFile, List>] = []
+        resolutions.reserveCapacity(entries.count)
+        for entry in entries {
+            guard let location = locationResolver(machO, entry) else {
+                resolutions.append(
+                    .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
+                )
+                continue
+            }
+            guard let relativeOffset = addingSignedDisplacement(
                 entry.signedListOffset,
                 to: entry.offset
               ),
               let canonicalOffset = UInt64(exactly: relativeOffset) else {
-            return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
-        }
-        let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
-        guard let header: List.Header = location.file.readProtocolLayout(
-            offset: location.fileOffset,
-            as: List.Header.self
-        ) else {
-            return .failure(
-                .init(
-                    listOffset: diagnosticOffset,
-                    failure: .unreadableFileHeader(
-                        offset: location.fileOffset,
-                        byteCount: MemoryLayout<List.Header>.size
+                resolutions.append(
+                    .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
+                )
+                continue
+            }
+            let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
+            guard let header: List.Header = location.file.readProtocolLayout(
+                offset: location.fileOffset,
+                as: List.Header.self
+            ) else {
+                resolutions.append(
+                    .failure(
+                        .init(
+                            listOffset: diagnosticOffset,
+                            failure: .unreadableFileHeader(
+                                offset: location.fileOffset,
+                                byteCount: MemoryLayout<List.Header>.size
+                            )
+                        )
                     )
                 )
-            )
+                continue
+            }
+            guard let listOffset = Int(exactly: canonicalOffset) else {
+                resolutions.append(
+                    .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
+                )
+                continue
+            }
+            resolutions.append(.resolved(location.image, List(offset: listOffset, header: header)))
         }
-        guard let listOffset = Int(exactly: canonicalOffset) else {
-            return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
-        }
-        return .resolved(location.image, List(offset: listOffset, header: header))
+        return .entries(resolutions)
     }
 
-    internal func resolveList(
+    internal func resolveLists(
         in machO: MachOImage,
-        forImageIndex imageIndex: Int,
+        imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
         imageResolver: (Int) -> MachOImage? = defaultRelativeImage
     ) -> ObjCProtocolListResolution<MachOImage, List> {
         let countAndStride: (count: Int, stride: Int)
@@ -218,9 +242,7 @@ extension ObjCProtocolRelativeListListProtocol {
         ) {
         case .success(let value): byteCount = value
         case .failure(let failure):
-            return .failure(
-                .init(listOffset: offset, failure: failure.diagnosticFailure)
-            )
+            return .failure(.init(listOffset: offset, failure: failure.diagnosticFailure))
         }
         guard let listAddress = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)) else {
             return .failure(.init(listOffset: offset, failure: .invalidRelativeListLocation))
@@ -254,17 +276,36 @@ extension ObjCProtocolRelativeListListProtocol {
             layouts.append(pointer.loadUnaligned(as: Entry.Layout.self))
         }
 
-        let entry: Entry
-        switch checkedEntry(
+        let entries: [Entry]
+        switch checkedEntries(
             layouts: layouts,
-            imageIndex: imageIndex,
             stride: countAndStride.stride
         ) {
-        case .success(let value): entry = value
+        case .success(let value): entries = value
         case .failure(let failure): return .failure(failure)
         }
 
-        guard let relativeOffset = addingSignedDisplacement(
+        var resolutions: [ObjCProtocolListResolutionEntry<MachOImage, List>] = []
+        resolutions.reserveCapacity(entries.count)
+        for entry in entries {
+            switch imageLoadResolver(entry.imageIndex) {
+            case .unavailable:
+                resolutions.append(
+                    .failure(
+                        .init(
+                            listOffset: entry.offset,
+                            failure: .relativeImageUnavailable(imageIndex: entry.imageIndex)
+                        )
+                    )
+                )
+                continue
+            case .unloaded:
+                continue
+            case .loaded:
+                break
+            }
+
+            guard let relativeOffset = addingSignedDisplacement(
                 entry.signedListOffset,
                 to: entry.offset
               ),
@@ -273,48 +314,43 @@ extension ObjCProtocolRelativeListListProtocol {
                 to: UInt(bitPattern: machO.ptr)
               ),
               let pointer = UnsafeRawPointer(bitPattern: address) else {
-            return .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
-        }
-        let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
-        guard isPointerSafelyReadable(pointer, length: MemoryLayout<List.Header>.size) else {
-            return .failure(
-                .init(
-                    listOffset: diagnosticOffset,
-                    failure: .unreadableImageHeader(
-                        address: address,
-                        byteCount: MemoryLayout<List.Header>.size
+                resolutions.append(
+                    .failure(.init(listOffset: entry.offset, failure: .invalidRelativeListLocation))
+                )
+                continue
+            }
+            let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
+            guard isPointerSafelyReadable(pointer, length: MemoryLayout<List.Header>.size) else {
+                resolutions.append(
+                    .failure(
+                        .init(
+                            listOffset: diagnosticOffset,
+                            failure: .unreadableImageHeader(
+                                address: address,
+                                byteCount: MemoryLayout<List.Header>.size
+                            )
+                        )
                     )
                 )
-            )
-        }
-        guard let targetMachO = imageResolver(imageIndex),
+                continue
+            }
+            guard let targetMachO = imageResolver(entry.imageIndex),
               let targetOffset = signedDisplacement(
                 from: UInt(bitPattern: targetMachO.ptr),
                 to: address
               ) else {
-            return .failure(
-                .init(
-                    listOffset: diagnosticOffset,
-                    failure: .relativeImageUnavailable(imageIndex: imageIndex)
+                resolutions.append(
+                    .failure(
+                        .init(
+                            listOffset: diagnosticOffset,
+                            failure: .relativeImageUnavailable(imageIndex: entry.imageIndex)
+                        )
+                    )
                 )
-            )
+                continue
+            }
+            resolutions.append(.resolved(targetMachO, List(ptr: pointer, offset: targetOffset)))
         }
-        return .resolved(targetMachO, List(ptr: pointer, offset: targetOffset))
-    }
-
-    internal func safelyReadList(
-        in machO: MachOFile,
-        forImageIndex imageIndex: Int?
-    ) -> (MachOFile, List)? {
-        guard let imageIndex else { return nil }
-        return resolveList(in: machO, forImageIndex: imageIndex).value
-    }
-
-    internal func safelyReadList(
-        in machO: MachOImage,
-        forImageIndex imageIndex: Int?
-    ) -> (MachOImage, List)? {
-        guard let imageIndex else { return nil }
-        return resolveList(in: machO, forImageIndex: imageIndex).value
+        return .entries(resolutions)
     }
 }

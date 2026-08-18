@@ -3,7 +3,7 @@
 - **状态**: In Review
 - **作者**: Kazuki Nakashima
 - **创建日期**: 2026-08-18
-- **最后更新**: 2026-08-18
+- **最后更新**: 2026-08-19
 - **所属愿景**: 无
 - **关联提案**: 无（编号 0005 已由较新的 upstream main 占用，本分支以 0.8.104 为基线）
 - **实现分支 / PR**: `codex/fix-protocol-metadata-traversal`
@@ -115,6 +115,23 @@ loaded-image range probe 仍沿用项目已有的 `mach_vm_read_overwrite` C bri
 first/last-page 检查补全为每个 touched page。same-page struct 仍只做一次 probe；跨页 protocol
 table 不会漏掉中间 unmapped page，也不需要为每个 pointer slot 单独发一次 Mach syscall。
 
+### Relative list-of-lists
+
+Objective-C runtime 的 `relative_list_list_t` 不是按 class owner image index 查询单个 list 的
+lookup table。outer table 的每个 entry 各自保存所属 image index 和到 inner list 的 signed 48-bit
+offset。file/debug-tool reader 按 table 顺序读取全部 entry；loaded-image reader 则先以该 entry 的
+image index 查询 runtime RW header-info loaded bit，unloaded entry 在计算 list address 前静默跳过。
+
+protocol reader 因此返回有序的 0...n 个 resolution。一个 loaded entry 的 location、header 或 target
+image 无法解析时，只在原位置产生 typed failure，后续正常 list 继续解析；同一 image index 的重复
+entry 也不得合并。合法 table 没有 loaded entry 是成功的空结果，owner entry 不存在本身不是错误。
+整表 count、stride、byte budget 或 backing range 无效时仍返回单个 whole-table failure，并且不会调用
+load-state、location 或 image resolver。
+
+method/property 也使用相同 ABI representation，但现有 public/internal 读取面没有 protocol path 的
+ordered typed outcome。本 follow-up 只修复已有安全诊断契约覆盖的 protocol reader；method/property
+需要在建立同等 failure contract 后单独迁移，不能接到会用 `compactMap` 丢失错误的旧 plural helper。
+
 ## Traversal 设计
 
 ### identity
@@ -207,3 +224,4 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | In Review | fork branch 已实现并进入 review；只有合并后才能按本仓库定义改为 Implemented。最终 test/build 实绩在 review 修正收敛后更新 |
 | 2026-08-18 | Review corrections complete | synthetic safety tests 31 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 66 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |
 | 2026-08-18 | Canonical protocol follow-up | watchOS 27 的 cache-wide canonical protocol pointer 没有 dylib owner。direct-name policy 通过 exact runtime registry identity 恢复 raw mangled name；full reads 和 unknown pointers 继续产生 bounded diagnostic。 |
+| 2026-08-19 | Relative list-of-lists follow-up | 按 objc4 iterator contract 改为 file 全 entry、loaded image 仅 loaded entry 的有序 plural resolution；owner index 不再是 protocol reader 输入，单 entry failure 不丢后续 sibling。 |

@@ -623,8 +623,23 @@ extension ObjCProtocolListResolution where Source == MachOFile, List: ObjCProtoc
         case .failure(let failure):
             context.record(resolutionFailure: failure)
             return []
-        case let .resolved(source, list):
-            return list.protocolInfos(in: source, options: options, context: &context)
+        case .entries(let entries):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(resolutionFailure: failure)
+                case let .resolved(source, list):
+                    infos.append(
+                        contentsOf: list.protocolInfos(
+                            in: source,
+                            options: options,
+                            context: &context
+                        )
+                    )
+                }
+            }
+            return infos
         }
     }
 }
@@ -648,8 +663,23 @@ extension ObjCProtocolListResolution where Source == MachOImage, List: ObjCProto
         case .failure(let failure):
             context.record(resolutionFailure: failure)
             return []
-        case let .resolved(source, list):
-            return list.protocolInfos(in: source, options: options, context: &context)
+        case .entries(let entries):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(resolutionFailure: failure)
+                case let .resolved(source, list):
+                    infos.append(
+                        contentsOf: list.protocolInfos(
+                            in: source,
+                            options: options,
+                            context: &context
+                        )
+                    )
+                }
+            }
+            return infos
         }
     }
 }
@@ -690,8 +720,8 @@ extension ObjCClassProtocol {
         let imagePath = machO.imagePath
 
         // Cache `objcImageIndex` lookups so a class with multiple relative
-        // list lists (protocol + property + method) only pays the dyld cache
-        // header walk once. Classes with no relative list list never enter
+        // list lists (property + method) only pays the dyld cache header walk
+        // once. Classes with no relative list list never enter
         // these closures, so the lookup is skipped entirely.
         var _imageIndex: Int??
         var _targetMachOImageIndex: Int??
@@ -709,7 +739,7 @@ extension ObjCClassProtocol {
         }
 
         let protocols = data
-            .protocolListResolution(in: machO, imageIndex: imageIndex())
+            .protocolListResolutions(in: machO)
             .referencedProtocolInfos(
                 options: options.protocolInfoOptions,
                 context: &context
@@ -851,7 +881,7 @@ extension ObjCClassProtocol {
         }
 
         let protocols = data
-            .protocolListResolution(in: machO, imageIndex: imageIndex())
+            .protocolListResolutions(in: machO)
             .referencedProtocolInfos(
                 options: options.protocolInfoOptions,
                 context: &context
