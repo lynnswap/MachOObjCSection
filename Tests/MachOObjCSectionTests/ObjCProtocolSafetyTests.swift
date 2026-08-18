@@ -3,6 +3,9 @@ import XCTest
 #if canImport(Darwin)
 import Darwin
 #endif
+#if canImport(ObjectiveC)
+import ObjectiveC
+#endif
 @_spi(Core) @_spi(Diagnostics) @testable import MachOObjCSection
 @testable import MachOKit
 
@@ -238,6 +241,171 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             return XCTFail("Expected cycle diagnostic")
         }
         XCTAssertEqual(cycle.protocolPath, ["A", "B", "A"])
+    }
+
+    func testRegisteredProtocolOutsideEveryImageRecoversDirectNameOnly() throws {
+#if canImport(ObjectiveC)
+        let name = "MachOObjCSectionCanonicalProtocolFixture"
+        let existing = objc_getProtocol(name)
+        if existing == nil {
+            RegisteredObjCProtocolNameResolver.runtime?.refresh()
+        }
+        let objcProtocol: Protocol
+        if let existing {
+            objcProtocol = existing
+        } else {
+            let allocated = try XCTUnwrap(objc_allocateProtocol(name))
+            objc_registerProtocol(allocated)
+            objcProtocol = allocated
+        }
+        let pointer = Unmanaged.passUnretained(objcProtocol).toOpaque()
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: pointer)))]
+                )
+            ]
+        )
+
+        XCTAssertFalse(fixture.machO.contains(ptr: UnsafeRawPointer(pointer)))
+        XCTAssertNil(fixture.machO.resolveImage(containing: UnsafeRawPointer(pointer)))
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        XCTAssertEqual(list.protocols(in: fixture.machO)?.count, 0)
+
+        let result = fixture.protocols[0].readInfo(
+            in: fixture.machO,
+            options: .directProtocolNames
+        )
+        XCTAssertEqual(result.value?.protocols.map(\.name), [name])
+        XCTAssertTrue(result.diagnostics.isEmpty)
+
+        let full = fixture.protocols[0].readInfo(in: fixture.machO)
+        XCTAssertEqual(full.value?.protocols, [])
+        guard case .unreadableList(let diagnostic) = full.diagnostics.first else {
+            return XCTFail("Expected full metadata to retain the missing-backing diagnostic")
+        }
+        XCTAssertEqual(diagnostic.failure, .missingBackingData(entryIndex: 0))
+#endif
+    }
+
+    func testUnregisteredMappedProtocolKeepsMissingBackingDiagnostic() throws {
+        let external = SyntheticExternalProtocolFixture(name: "Unregistered")
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+
+        let result = fixture.protocols[0].readInfo(
+            in: fixture.machO,
+            options: .directProtocolNames
+        )
+        XCTAssertEqual(result.value?.protocols, [])
+        guard case .unreadableList(let diagnostic) = result.diagnostics.first else {
+            return XCTFail("Expected an unregistered pointer diagnostic")
+        }
+        XCTAssertEqual(diagnostic.failure, .missingBackingData(entryIndex: 0))
+    }
+
+    func testRegisteredMappedProtocolPreservesRawMangledName() throws {
+        let rawName = "_TtP19CanonicalFixture7Example_"
+        let external = SyntheticExternalProtocolFixture(name: rawName)
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let resolver = RegisteredObjCProtocolNameResolver(
+            cachedName: { pointer in
+                pointer == external.pointer ? "CanonicalFixture.Example" : nil
+            },
+            refresh: {}
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            registeredProtocolNames: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(result.nameReferences.map(\.name), [rawName])
+        XCTAssertTrue(result.failures.isEmpty)
+    }
+
+    func testRegisteredProtocolRefreshIsBoundedPerTable() throws {
+        let first = SyntheticExternalProtocolFixture(name: "First")
+        let second = SyntheticExternalProtocolFixture(name: "Second")
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [
+                        .pointer(UInt64(UInt(bitPattern: first.pointer))),
+                        .pointer(UInt64(UInt(bitPattern: second.pointer)))
+                    ]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        var refreshCount = 0
+        let resolver = RegisteredObjCProtocolNameResolver(
+            cachedName: { _ in nil },
+            refresh: { refreshCount += 1 }
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            registeredProtocolNames: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(refreshCount, 1)
+        XCTAssertEqual(result.failures.count, 2)
+    }
+
+    func testRegisteredButUnreadableProtocolKeepsTypedLayoutFailure() throws {
+        let unreadableAddress = UInt(0x10)
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(unreadableAddress))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let pointer = try XCTUnwrap(UnsafeRawPointer(bitPattern: unreadableAddress))
+        XCTAssertNil(fixture.machO.resolveImage(containing: pointer))
+        var lookupCount = 0
+        let resolver = RegisteredObjCProtocolNameResolver(
+            cachedName: { _ in
+                lookupCount += 1
+                return "Registered"
+            },
+            refresh: {}
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            registeredProtocolNames: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 1)
+        XCTAssertEqual(result.nameReferences.count, 0)
+        guard case .unreadableImageLayout(let address, let byteCount) = result.failures.first?.reason else {
+            return XCTFail("Expected a typed unreadable-layout failure")
+        }
+        XCTAssertEqual(address, unreadableAddress)
+        XCTAssertEqual(byteCount, MemoryLayout<ObjCProtocol64.Layout>.size)
     }
 
     func testReadableUnalignedHeadersAndProtocolLayoutAreLoadedSafely() throws {
@@ -828,6 +996,7 @@ private enum SyntheticGraph {
         case node(Int)
         case invalid
         case offset(Int)
+        case pointer(UInt64)
     }
 
     struct Node {
@@ -922,6 +1091,8 @@ private enum SyntheticGraph {
                     pointer = 0xDEAD_BEEF
                 case .offset(let offset):
                     pointer = address(offset)
+                case .pointer(let absolute):
+                    pointer = absolute
                 }
                 data.store(
                     pointer,
@@ -1034,6 +1205,54 @@ private enum SyntheticGraph {
             classLayout: classLayout,
             categoryLayout: categoryLayout
         )
+    }
+}
+
+private final class SyntheticExternalProtocolFixture {
+    let pointer: UnsafeRawPointer
+    private let storage: UnsafeMutableRawPointer
+
+    init(name: String) {
+        let layoutSize = MemoryLayout<ObjCProtocol64.Layout>.size
+        let nameBytes = Array(name.utf8) + [0]
+        let storage = UnsafeMutableRawPointer.allocate(
+            byteCount: layoutSize + nameBytes.count,
+            alignment: 16
+        )
+        self.storage = storage
+        self.pointer = UnsafeRawPointer(storage)
+        storage.initializeMemory(
+            as: UInt8.self,
+            repeating: 0,
+            count: layoutSize + nameBytes.count
+        )
+
+        let namePointer = storage.advanced(by: layoutSize)
+        nameBytes.withUnsafeBytes { bytes in
+            namePointer.copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+        }
+        var layout = ObjCProtocol64.Layout(
+            isa: 0,
+            mangledName: UInt64(UInt(bitPattern: namePointer)),
+            protocols: 0,
+            instanceMethods: 0,
+            classMethods: 0,
+            optionalInstanceMethods: 0,
+            optionalClassMethods: 0,
+            instanceProperties: 0,
+            size: UInt32(layoutSize),
+            flags: 0,
+            _extendedMethodTypes: 0,
+            _demangledName: 0,
+            _classProperties: 0
+        )
+        withUnsafeBytes(of: &layout) { bytes in
+            storage.copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
+        }
+    }
+
+    deinit {
+        storage.deallocate()
     }
 }
 

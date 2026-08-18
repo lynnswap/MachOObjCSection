@@ -55,6 +55,12 @@ internal struct ObjCProtocolReference<Source, Protocol> {
     let identity: ObjCProtocolIdentity
 }
 
+internal struct ObjCProtocolNameReference {
+    let index: Int
+    let name: String
+    let identity: ObjCProtocolIdentity
+}
+
 internal enum ObjCProtocolListTableFailure: Error, Equatable {
     case unsupportedListEncoding
     case invalidListOffset(Int)
@@ -85,6 +91,7 @@ internal struct ObjCProtocolListEntryFailure: Equatable {
 
 internal enum ObjCProtocolListReadEntry<Source, Protocol> {
     case reference(ObjCProtocolReference<Source, Protocol>)
+    case nameReference(ObjCProtocolNameReference)
     case failure(ObjCProtocolListEntryFailure)
 }
 
@@ -94,6 +101,13 @@ internal struct ObjCProtocolListReadSuccess<Source, Protocol> {
     var references: [ObjCProtocolReference<Source, Protocol>] {
         entries.compactMap { entry in
             guard case .reference(let reference) = entry else { return nil }
+            return reference
+        }
+    }
+
+    var nameReferences: [ObjCProtocolNameReference] {
+        entries.compactMap { entry in
+            guard case .nameReference(let reference) = entry else { return nil }
             return reference
         }
     }
@@ -385,7 +399,8 @@ extension ObjCProtocolListProtocol {
     }
 
     internal func readProtocols(
-        in machO: MachOImage
+        in machO: MachOImage,
+        registeredProtocolNames: RegisteredObjCProtocolNameResolver? = nil
     ) -> ObjCProtocolListReadOutcome<MachOImage, ObjCProtocol> {
         guard !isListOfLists else {
             return .failure(.unsupportedListEncoding)
@@ -437,6 +452,7 @@ extension ObjCProtocolListProtocol {
 
         var entries: [ObjCProtocolListReadEntry<MachOImage, ObjCProtocol>] = []
         entries.reserveCapacity(count)
+        var refreshedRegisteredProtocols = false
 
         for (index, pointer) in pointers.enumerated() {
             guard let rawValue = UInt64(exactly: pointer) else {
@@ -451,12 +467,26 @@ extension ObjCProtocolListProtocol {
             }
 
             var targetMachO = machO
+            var isRegisteredNameReference = false
             if !targetMachO.contains(ptr: protocolPointer) {
-                guard let resolvedMachO = machO.resolveImage(containing: protocolPointer) else {
+                if let resolvedMachO = machO.resolveImage(containing: protocolPointer) {
+                    targetMachO = resolvedMachO
+                } else if let registeredProtocolNames {
+                    var registeredName = registeredProtocolNames.cachedName(protocolPointer)
+                    if registeredName == nil, !refreshedRegisteredProtocols {
+                        registeredProtocolNames.refresh()
+                        refreshedRegisteredProtocols = true
+                        registeredName = registeredProtocolNames.cachedName(protocolPointer)
+                    }
+                    guard registeredName != nil else {
+                        entries.append(.failure(.init(index: index, reason: .missingBackingData)))
+                        continue
+                    }
+                    isRegisteredNameReference = true
+                } else {
                     entries.append(.failure(.init(index: index, reason: .missingBackingData)))
                     continue
                 }
-                targetMachO = resolvedMachO
             }
 
             let layoutSize = MemoryLayout<ObjCProtocol.Layout>.size
@@ -473,6 +503,27 @@ extension ObjCProtocolListProtocol {
                 continue
             }
 
+            let layout = protocolPointer.loadUnaligned(as: ObjCProtocol.Layout.self)
+            if isRegisteredNameReference {
+                // dyld canonical protocols live in cache-wide __OBJC_RW storage,
+                // outside every Mach-O image. The runtime registry proves exact
+                // pointer identity; the copied layout preserves the raw mangled name.
+                let protocolValue = ObjCProtocol(layout: layout, offset: 0)
+                let name = protocolValue.mangledName(in: machO)
+                guard !name.isEmpty else {
+                    entries.append(.failure(.init(index: index, reason: .missingBackingData)))
+                    continue
+                }
+                entries.append(
+                    .nameReference(.init(
+                        index: index,
+                        name: name,
+                        identity: .image(address: strippedAddress)
+                    ))
+                )
+                continue
+            }
+
             guard let protocolOffset = signedDisplacement(
                 from: UInt(bitPattern: targetMachO.ptr),
                 to: strippedAddress
@@ -481,7 +532,6 @@ extension ObjCProtocolListProtocol {
                 continue
             }
 
-            let layout = protocolPointer.loadUnaligned(as: ObjCProtocol.Layout.self)
             let objcProtocol = ObjCProtocol(layout: layout, offset: protocolOffset)
             entries.append(
                 .reference(.init(

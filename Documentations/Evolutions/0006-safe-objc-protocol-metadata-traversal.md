@@ -102,7 +102,14 @@ excessive-byte-count diagnostic 报告。按 4 KiB page 计算，单表最多触
 
 整表有效后保持声明顺序逐项处理。无法 rebase、找不到 backing data、或 protocol layout range
 不可读时，仅跳过该 index，并附上 typed entry failure。其它 entry 继续返回。`MachOImage`
-在任何 `.pointee` 前先确定 target image 并 probe 完整 layout range。
+在任何 `.pointee` 前 probe 完整 layout range；通常 reference 仍先确定 target image。
+
+dyld shared cache 的 [canonical protocol](https://github.com/apple-oss-distributions/dyld/blob/fd8d0c4d52320ebf64db34f3cb280310d905c5ae/cache_builder/NewSharedCacheBuilder.cpp#L7735-L7845)
+位于 cache-wide `__OBJC_RW`，不属于任何 Mach-O image。
+loaded reader 只有在 Objective-C runtime 的 registered protocol snapshot 中 exact match 时，才把这种
+pointer 恢复为 name-only reference；输出名仍读取 canonical layout 的 raw mangled name。这个恢复只服务
+header dump 的 direct-name policy。full metadata request、unknown pointer 与 unreadable layout 继续产生
+原有 bounded diagnostic，不能把 caller image 伪装成 canonical object 的 owner。
 
 loaded-image range probe 仍沿用项目已有的 `mach_vm_read_overwrite` C bridge，但把原来的
 first/last-page 检查补全为每个 touched page。same-page struct 仍只做一次 probe；跨页 protocol
@@ -183,7 +190,9 @@ logger，也不把 handler 塞进 `Sendable` options。
 6. `.depth(1)` 保留 direct names 且无 limit diagnostic；
 7. 旧 `info` wrapper 不 trap；
 8. file/image 与 regular/relative 四条路径的 entry/byte resource budget；
-9. MachOFile / MachOImage 两条路径。
+9. MachOFile / MachOImage 两条路径；
+10. image 外 registered protocol 的 direct name、unknown pointer、unreadable registered pointer，及
+    full metadata 不使用 name-only recovery。
 
 ## 决策日志
 
@@ -197,3 +206,4 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | 全 protocol table resource budget 取 65,536 entries / 512 KiB | 同时约束 count 与 advertised stride；mapped/file-range 大小不再决定 parser 愿意承担的工作量 |
 | 2026-08-18 | In Review | fork branch 已实现并进入 review；只有合并后才能按本仓库定义改为 Implemented。最终 test/build 实绩在 review 修正收敛后更新 |
 | 2026-08-18 | Review corrections complete | synthetic safety tests 31 件全绿；排除基线既有 hardcoded `/Users/JH/Downloads/iOS18.5-SwiftUI` XCTestCase 后合计 66 tests 全绿；release、iOS Simulator arm64/x86_64、watchOS（含 arm64_32 compile）build 成功；状态仍保持 In Review，等待下游验证与合并 |
+| 2026-08-18 | Canonical protocol follow-up | watchOS 27 的 cache-wide canonical protocol pointer 没有 dylib owner。direct-name policy 通过 exact runtime registry identity 恢复 raw mangled name；full reads 和 unknown pointers 继续产生 bounded diagnostic。 |

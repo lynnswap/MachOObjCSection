@@ -379,33 +379,28 @@ extension ObjCProtocolProtocol {
     }
 }
 
+private func shallowProtocolInfo(name: String) -> ObjCProtocolInfo {
+    .init(
+        name: name,
+        protocols: [],
+        classProperties: [],
+        properties: [],
+        classMethods: [],
+        methods: [],
+        optionalClassProperties: [],
+        optionalProperties: [],
+        optionalClassMethods: [],
+        optionalMethods: []
+    )
+}
+
 extension ObjCProtocolProtocol {
     fileprivate func shallowInfo(in machO: MachOFile) -> ObjCProtocolInfo {
-        .init(
-            name: mangledName(in: machO),
-            protocols: [],
-            classProperties: [],
-            properties: [],
-            classMethods: [],
-            methods: [],
-            optionalClassProperties: [],
-            optionalProperties: [],
-            optionalClassMethods: [],
-            optionalMethods: []
-        )
+        shallowProtocolInfo(name: mangledName(in: machO))
     }
 
     fileprivate func shallowInfo(in machO: MachOImage) -> ObjCProtocolInfo {
-        .init(
-            name: mangledName(in: machO),
-            protocols: [],
-            classProperties: [],
-            properties: [],
-            classMethods: [],
-            methods: [],
-            optionalClassMethods: [],
-            optionalMethods: []
-        )
+        shallowProtocolInfo(name: mangledName(in: machO))
     }
 
     fileprivate func referenceInfo(
@@ -529,6 +524,14 @@ extension ObjCProtocolListProtocol {
                 switch entry {
                 case .failure(let failure):
                     context.record(entryFailure: failure, listOffset: offset)
+                case .nameReference(let reference):
+                    context.record(
+                        entryFailure: .init(
+                            index: reference.index,
+                            reason: .missingBackingData
+                        ),
+                        listOffset: offset
+                    )
                 case .reference(let reference):
                     if let info = reference.value.referenceInfo(
                         in: reference.source,
@@ -549,7 +552,17 @@ extension ObjCProtocolListProtocol {
         options: ObjCProtocolInfoOptions,
         context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        switch readProtocols(in: machO) {
+        let registeredProtocolNames: RegisteredObjCProtocolNameResolver?
+        switch options.referencedProtocolInfo {
+        case .full:
+            registeredProtocolNames = nil
+        case .nameOnly:
+            registeredProtocolNames = .runtime
+        }
+        switch readProtocols(
+            in: machO,
+            registeredProtocolNames: registeredProtocolNames
+        ) {
         case .failure(let failure):
             context.record(tableFailure: failure, listOffset: offset)
             return []
@@ -559,6 +572,22 @@ extension ObjCProtocolListProtocol {
                 switch entry {
                 case .failure(let failure):
                     context.record(entryFailure: failure, listOffset: offset)
+                case .nameReference(let reference):
+                    guard case .nameOnly = options.referencedProtocolInfo else {
+                        context.record(
+                            entryFailure: .init(
+                                index: reference.index,
+                                reason: .missingBackingData
+                            ),
+                            listOffset: offset
+                        )
+                        continue
+                    }
+                    _ = context.decision(
+                        for: reference.identity,
+                        name: reference.name
+                    )
+                    infos.append(shallowProtocolInfo(name: reference.name))
                 case .reference(let reference):
                     if let info = reference.value.referenceInfo(
                         in: reference.source,
