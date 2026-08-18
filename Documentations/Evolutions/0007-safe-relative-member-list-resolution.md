@@ -70,10 +70,11 @@ outer 与每个 resolved inner list 在 legacy `methods(in:)` / `properties(in:)
 
 1. header 完整可读；
 2. count 可 exact 转换；
-3. list address/offset 满足对应 method/property entry 的 alignment；header 自身用 unaligned load；
-4. entry size 与 method kind / target bitness 或 property bitness 一致；
-5. `count * entrySize` 不 overflow，且不超过 65,536 entries / 512 KiB；
-6. 完整 file/image table range 可读。
+3. count 为 0 时，不验证未使用的 entry size/alignment，并作为合法空 list 成功；
+4. 非空 list 的 address/offset 满足对应 method/property entry 的 alignment；header 本身使用 unaligned load；
+5. 非空 list 的 entry size 与 method kind / target bitness 或 property bitness 一致；
+6. `count * entrySize` 不 overflow，且不超过 65,536 entries / 512 KiB；
+7. 完整 file/image table range 可读。
 
 本提案保证 relative outer table 和 inner member table 的结构安全。不扩张到每个 method/property
 内部 C string pointer 的 hostile-input 完整 hardening，也不声称整个 member parser 已全面 hardened。
@@ -94,6 +95,7 @@ internal typed outcome，不调用会在 probe 前 `.pointee` 的旧 query。
 - `good / malformed / good` 的 sibling 保持；
 - all-unloaded、unknown load state、file all-loaded mode；
 - outer stride/count/range 与 inner entry-size/count/range boundaries；
+- count 为 0 且未使用 entry size 为 0/flags-only 的合法空 method/property list；
 - method selector/property name 的 outer+inner 顺序；
 - instance/class method/property 四种 diagnostic kind；
 - Diagnostics SPI compile consumer；
@@ -105,3 +107,4 @@ internal typed outcome，不调用会在 probe 前 `.pointee` 的旧 query。
 |---|---|---|
 | 2026-08-19 | Created / In Review | Issue #65；从 protocol reader 抽取 neutral outer owner，保留 inner decoder 分工与既有 public surface |
 | 2026-08-19 | additive member SPI | 不给 `ObjCProtocolDiagnostic` 增加 member case；已知 consumer 的 exhaustive switch 保持源码兼容 |
+| 2026-08-19 | empty-list contract | 根据 watchOS 27 CoreFoundation runtime fixture，count 为 0 时不验证未使用的 entry size/alignment |

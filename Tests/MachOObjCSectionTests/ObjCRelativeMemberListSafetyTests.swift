@@ -198,6 +198,32 @@ final class ObjCRelativeMemberListSafetyTests: XCTestCase {
         XCTAssertEqual(methodNames(in: result), ["m1", "m2", "m3"])
     }
 
+    func testZeroCountListsDoNotRequireAnUnusedEntrySize() {
+        let methodFixture = SyntheticRelativeMemberImageFixture(
+            kind: .method,
+            malformation: .emptyList
+        )
+        let methods = methodFixture.methodRelative.resolveMemberLists(
+            in: methodFixture.machO,
+            imageLoadResolver: { $0 == 199 ? .unloaded : .loaded },
+            imageResolver: { _ in methodFixture.machO }
+        )
+        XCTAssertEqual(resolvedCount(methods.entriesForTesting), 3)
+        XCTAssertEqual(methodNames(in: methods), ["m1", "m2", "m3"])
+
+        let propertyFixture = SyntheticRelativeMemberImageFixture(
+            kind: .property,
+            malformation: .emptyList
+        )
+        let properties = propertyFixture.propertyRelative.resolveMemberLists(
+            in: propertyFixture.machO,
+            imageLoadResolver: { $0 == 199 ? .unloaded : .loaded },
+            imageResolver: { _ in propertyFixture.machO }
+        )
+        XCTAssertEqual(resolvedCount(properties.entriesForTesting), 3)
+        XCTAssertEqual(propertyNames(in: properties), ["p1", "p2", "p3"])
+    }
+
     func testMemberDiagnosticsKeepAllFourKindsSeparate() {
         let failure = ObjCRelativeListFailure.entry(
             outerListOffset: 100,
@@ -274,6 +300,7 @@ private final class SyntheticRelativeMemberImageFixture {
         case invalidEntrySize
         case excessiveCount
         case misalignedAddress
+        case emptyList
     }
 
     let machO: MachOImage
@@ -349,7 +376,8 @@ private final class SyntheticRelativeMemberImageFixture {
             writeMalformedList(
                 kind: malformation,
                 at: listOffsets[2],
-                expectedEntrySize: MemoryLayout<ObjCMethod.Pointer>.size
+                expectedEntrySize: MemoryLayout<ObjCMethod.Pointer>.size,
+                emptyListFlags: 3
             )
             writeMethodList(names: ["m3"], at: listOffsets[3], stringBase: 0x6800)
         case .property:
@@ -357,7 +385,8 @@ private final class SyntheticRelativeMemberImageFixture {
             writeMalformedList(
                 kind: malformation,
                 at: listOffsets[2],
-                expectedEntrySize: MemoryLayout<ObjCProperty.Property>.size
+                expectedEntrySize: MemoryLayout<ObjCProperty.Property>.size,
+                emptyListFlags: 0
             )
             writePropertyList(names: ["p3"], at: listOffsets[3], stringBase: 0x7800)
         }
@@ -438,25 +467,29 @@ private final class SyntheticRelativeMemberImageFixture {
     private func writeMalformedList(
         kind: Malformation,
         at offset: Int,
-        expectedEntrySize: Int
+        expectedEntrySize: Int,
+        emptyListFlags: UInt32
     ) {
-        let advertisedEntrySize: Int
+        let entsizeAndFlags: UInt32
         let count: UInt32
         switch kind {
         case .invalidEntrySize:
-            advertisedEntrySize = expectedEntrySize - 4
+            entsizeAndFlags = UInt32(expectedEntrySize - 4)
             count = 1
         case .excessiveCount:
-            advertisedEntrySize = expectedEntrySize
+            entsizeAndFlags = UInt32(expectedEntrySize)
             count = UInt32(ObjCProtocolReadLimits.maximumListEntries + 1)
         case .misalignedAddress:
-            advertisedEntrySize = expectedEntrySize
+            entsizeAndFlags = UInt32(expectedEntrySize)
             count = 1
+        case .emptyList:
+            entsizeAndFlags = emptyListFlags
+            count = 0
         }
         storage.advanced(by: offset).storeUnaligned(
             EntrySizeListHeader(
                 layout: .init(
-                    entsizeAndFlags: UInt32(advertisedEntrySize),
+                    entsizeAndFlags: entsizeAndFlags,
                     count: count
                 )
             )
@@ -535,7 +568,9 @@ private final class SyntheticRelativeMemberFileFixture {
             data.store(
                 EntrySizeListHeader(
                     layout: .init(
-                        entsizeAndFlags: UInt32(MemoryLayout<ObjCMethod.Pointer64>.size),
+                        entsizeAndFlags: index == 0
+                            ? 3
+                            : UInt32(MemoryLayout<ObjCMethod.Pointer64>.size),
                         count: 0
                     )
                 ),
@@ -544,7 +579,9 @@ private final class SyntheticRelativeMemberFileFixture {
             data.store(
                 EntrySizeListHeader(
                     layout: .init(
-                        entsizeAndFlags: UInt32(MemoryLayout<ObjCProperty.Property64>.size),
+                        entsizeAndFlags: index == 0
+                            ? 0
+                            : UInt32(MemoryLayout<ObjCProperty.Property64>.size),
                         count: 0
                     )
                 ),

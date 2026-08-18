@@ -76,6 +76,12 @@ extension ObjCMemberRelativeListListProtocol {
                     header: header,
                     is64Bit: location.image.is64Bit
                 )
+                let count: Int
+                switch checkedElementCount(for: list) {
+                case .success(let value): count = value
+                case .failure(let failure): return .failure(failure)
+                }
+                guard count > 0 else { return .success(list) }
                 let requiredAlignment = expectedEntryAlignment(for: list)
                 guard listOffset.isMultiple(of: requiredAlignment) else {
                     return .failure(
@@ -87,11 +93,6 @@ extension ObjCMemberRelativeListListProtocol {
                 }
                 if let failure = validateEntrySize(of: list) {
                     return .failure(failure)
-                }
-                let count: Int
-                switch checkedElementCount(for: list) {
-                case .success(let value): count = value
-                case .failure(let failure): return .failure(failure)
                 }
                 let (tableOffset, overflow) = location.fileOffset.addingReportingOverflow(
                     UInt64(MemoryLayout<EntrySizeListHeader>.size)
@@ -145,6 +146,12 @@ extension ObjCMemberRelativeListListProtocol {
                     offset: listOffset,
                     is64Bit: targetMachO.is64Bit
                 )
+                let count: Int
+                switch checkedElementCount(for: list) {
+                case .success(let value): count = value
+                case .failure(let failure): return .failure(failure)
+                }
+                guard count > 0 else { return .success(list) }
                 let requiredAlignment = expectedEntryAlignment(for: list)
                 let listAddress = UInt(bitPattern: pointer)
                 guard listAddress.isMultiple(of: UInt(requiredAlignment)) else {
@@ -157,11 +164,6 @@ extension ObjCMemberRelativeListListProtocol {
                 }
                 if let failure = validateEntrySize(of: list) {
                     return .failure(failure)
-                }
-                let count: Int
-                switch checkedElementCount(for: list) {
-                case .success(let value): count = value
-                case .failure(let failure): return .failure(failure)
                 }
                 let byteCount: Int
                 switch ObjCProtocolReadLimits.checkedTableByteCount(
