@@ -497,7 +497,7 @@ extension ObjCProtocolListProtocol {
                       let rawNamePointer = UnsafeRawPointer(bitPattern: rawNameAddress),
                       let rawName = readBoundedNullTerminatedUTF8(at: rawNamePointer),
                       !rawName.isEmpty,
-                      registeredProtocolNames.protocolAddress(rawName) != nil else {
+                      let canonicalProtocolPointer = registeredProtocolNames.protocolAddress(rawName) else {
                     entries.append(.failure(.init(index: index, reason: .missingBackingData)))
                     continue
                 }
@@ -505,7 +505,7 @@ extension ObjCProtocolListProtocol {
                     .nameReference(.init(
                         index: index,
                         name: rawName,
-                        identity: .image(address: strippedAddress)
+                        identity: .image(address: UInt(bitPattern: canonicalProtocolPointer))
                     ))
                 )
                 continue

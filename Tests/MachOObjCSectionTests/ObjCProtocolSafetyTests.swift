@@ -273,6 +273,17 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertNil(fixture.machO.resolveImage(containing: rawProtocol.pointer))
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
         XCTAssertEqual(list.protocols(in: fixture.machO)?.count, 0)
+        let runtimeResolver = try XCTUnwrap(RegisteredObjCProtocolNameResolver.runtime)
+        guard case .success(let aliasResult) = list.readProtocols(
+            in: fixture.machO,
+            registeredProtocolNames: runtimeResolver
+        ) else {
+            return XCTFail("Expected the runtime to resolve the raw protocol alias")
+        }
+        XCTAssertEqual(
+            aliasResult.nameReferences.first?.identity,
+            .image(address: UInt(bitPattern: canonicalPointer))
+        )
 
         let result = fixture.protocols[0].readInfo(
             in: fixture.machO,
@@ -346,6 +357,10 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
         XCTAssertEqual(lookedUpNames, [rawName])
         XCTAssertEqual(result.nameReferences.map(\.name), [rawName])
+        XCTAssertEqual(
+            result.nameReferences.first?.identity,
+            .image(address: UInt(bitPattern: canonicalPointer))
+        )
         XCTAssertTrue(result.failures.isEmpty)
     }
 
@@ -388,7 +403,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         let external = SyntheticExternalProtocolFixture(
             nameBytes: Array(
                 repeating: 0x41,
-                count: RegisteredObjCProtocolNameLimits.maximumByteCount
+                count: BoundedCStringReadLimits.maximumByteCount
             )
         )
         let fixture = SyntheticImageFixture(
@@ -419,7 +434,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
     func testOverLimitRawProtocolNameKeepsMissingBackingFailure() throws {
         let nameBytes = Array(
             repeating: UInt8(0x41),
-            count: RegisteredObjCProtocolNameLimits.maximumByteCount
+            count: BoundedCStringReadLimits.maximumByteCount
         ) + [0]
         let external = SyntheticExternalProtocolFixture(nameBytes: nameBytes)
         let fixture = SyntheticImageFixture(
@@ -441,6 +456,38 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
+        XCTAssertEqual(
+            result.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
+    }
+
+    func testInvalidUTF8RawProtocolNameKeepsMissingBackingFailure() throws {
+        let external = SyntheticExternalProtocolFixture(nameBytes: [0xFF, 0])
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        var lookupCount = 0
+        let resolver = RegisteredObjCProtocolNameResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return UnsafeRawPointer(bitPattern: 0x2_0000)
+            }
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            registeredProtocolNames: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 0)
         XCTAssertEqual(
             result.failures,
             [.init(index: 0, reason: .missingBackingData)]
