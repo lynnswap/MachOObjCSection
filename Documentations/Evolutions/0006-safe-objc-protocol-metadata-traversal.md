@@ -3,7 +3,7 @@
 - **状态**: In Review
 - **作者**: Kazuki Nakashima
 - **创建日期**: 2026-08-18
-- **最后更新**: 2026-08-19
+- **最后更新**: 2026-08-25
 - **所属愿景**: 无
 - **关联提案**: 无（编号 0005 已由较新的 upstream main 占用，本分支以 0.8.104 为基线）
 - **实现分支 / PR**: `codex/fix-protocol-metadata-traversal`
@@ -106,10 +106,21 @@ excessive-byte-count diagnostic 报告。按 4 KiB page 计算，单表最多触
 
 dyld shared cache 的 [canonical protocol](https://github.com/apple-oss-distributions/dyld/blob/fd8d0c4d52320ebf64db34f3cb280310d905c5ae/cache_builder/NewSharedCacheBuilder.cpp#L7735-L7845)
 位于 cache-wide `__OBJC_RW`，不属于任何 Mach-O image。
-loaded reader 只有在 Objective-C runtime 的 registered protocol snapshot 中 exact match 时，才把这种
-pointer 恢复为 name-only reference；输出名仍读取 canonical layout 的 raw mangled name。这个恢复只服务
-header dump 的 direct-name policy。full metadata request、unknown pointer 与 unreadable layout 继续产生
-原有 bounded diagnostic，不能把 caller image 伪装成 canonical object 的 owner。
+Objective-C runtime 的 [`remapProtocol`](https://github.com/apple-oss-distributions/objc4/blob/fb265098298302243cd7eeaa1f63f0ba7786dd9a/runtime/objc-runtime-new.mm#L2747-L2765)
+は raw `protocol_ref_t` と live protocol の pointer 一致を要求せず、raw object の `mangledName` で
+canonical object を引き直す。`class_copyProtocolList` と `objc_copyProtocolList` が返す live pointer
+集合を raw list entry の identity として使ってはならない。
+
+loaded reader は image 外 entry の layout 全体を probe した後、raw `mangledName` を最大 64 KiB の
+null-terminated UTF-8 として page ごとに bounded read する。`objc_getProtocol(rawName)` が live
+protocol を返した場合だけ name-only reference として採用し、出力には source metadata の raw
+mangled name を保つ。この recovery は header dump の direct-name policy に限る。full metadata
+request、unknown name、unreadable / unterminated name、unreadable layout は既存の typed degradation
+を維持し、caller image を canonical object の owner に見せかけない。
+
+runtime registry の name lookup が identity owner なので、address snapshot、refresh-once state、独自
+lock は持たない。名前一致だけで unknown object を採用するのではなく、Objective-C runtime 自身が
+その raw name の canonical protocol を所有していることを admission condition とする。
 
 loaded-image range probe 仍沿用项目已有的 `mach_vm_read_overwrite` C bridge，但把原来的
 first/last-page 检查补全为每个 touched page。same-page struct 仍只做一次 probe；跨页 protocol
@@ -209,7 +220,9 @@ logger，也不把 handler 塞进 `Sendable` options。
 8. file/image 与 regular/relative 四条路径的 entry/byte resource budget；
 9. MachOFile / MachOImage 两条路径；
 10. image 外 registered protocol 的 direct name、unknown pointer、unreadable registered pointer，及
-    full metadata 不使用 name-only recovery。
+    full metadata 不使用 name-only recovery；
+11. raw / canonical pointer が異なる同名 alias、raw Swift mangled name の保持、unreadable・非終端・
+    64 KiB 超の name が trap せず degradation になること。
 
 ## 决策日志
 
@@ -226,3 +239,4 @@ logger，也不把 handler 塞进 `Sendable` options。
 | 2026-08-18 | Canonical protocol follow-up | watchOS 27 的 cache-wide canonical protocol pointer 没有 dylib owner。direct-name policy 通过 exact runtime registry identity 恢复 raw mangled name；full reads 和 unknown pointers 继续产生 bounded diagnostic。 |
 | 2026-08-19 | Relative list-of-lists follow-up | 按 objc4 iterator contract 改为 file 全 entry、loaded image 仅 loaded entry 的有序 plural resolution；owner index 不再是 protocol reader 输入，单 entry failure 不丢后续 sibling。 |
 | 2026-08-19 | Member-list successor | method/property 的同型 owner-index 缺陷与 additive diagnostics 契约由 [0007](0007-safe-relative-member-list-resolution.md) 接续；0006 的 protocol payload 与 consumer contract 保持不变。 |
+| 2026-08-25 | Canonical alias correction | exact live-pointer membership は objc4 の raw `protocol_ref_t` 契約に反するため撤回。bounded raw name と `objc_getProtocol` を唯一の remap owner とし、address snapshot / refresh state を削除する。 |
