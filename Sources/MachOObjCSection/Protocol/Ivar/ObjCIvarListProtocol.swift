@@ -28,7 +28,9 @@ extension ObjCIvarListProtocol {
 
 extension ObjCIvarListProtocol {
     func isValidEntrySize(is64Bit: Bool) -> Bool {
-        MemoryLayout<ObjCIvar.Layout>.size == entrySize
+        guard header.count > 0 else { return true }
+        return Int(exactly: header.entsizeAndFlags & ~Self.flagMask)
+            == MemoryLayout<ObjCIvar.Layout>.size
     }
 }
 

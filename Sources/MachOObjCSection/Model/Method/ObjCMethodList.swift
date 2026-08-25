@@ -100,7 +100,9 @@ extension ObjCMethodList {
     }
 
     func isValidEntrySize(is64Bit: Bool) -> Bool {
-        expectedEntrySize(is64Bit: is64Bit) == entrySize
+        guard header.count > 0 else { return true }
+        return Int(exactly: header.entsizeAndFlags & ~Self.flagMask)
+            == expectedEntrySize(is64Bit: is64Bit)
     }
 }
 

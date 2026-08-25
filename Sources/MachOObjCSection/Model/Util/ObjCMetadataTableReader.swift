@@ -12,7 +12,11 @@ internal import FileIO
 #endif
 
 internal enum ObjCMetadataReadLimits {
+    /// One Objective-C metadata table may contain at most this many entries.
     static let maximumListEntries = 65_536
+
+    /// Count and stride share this complete-table budget before any read,
+    /// readability probe, allocation, or decode.
     static let maximumTableByteCount = 512 * 1_024
 
     /// Runtime-only names referenced by one protocol table share a separate

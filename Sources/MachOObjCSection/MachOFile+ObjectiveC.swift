@@ -57,17 +57,24 @@ extension MachOFile.ObjectiveC {
             return nil
         }
 
-        let offset = if let cache = machO.cache {
-            __objc_methlist.address - numericCast(cache.mainCacheHeader.sharedRegionStart)
+        let offset: Int
+        if let cache = machO.cache {
+            guard let cacheOffset = checkedCacheOffset(
+                address: UInt64(__objc_methlist.address),
+                sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+            ), let exactOffset = Int(exactly: cacheOffset) else { return nil }
+            offset = exactOffset
         } else {
-            __objc_methlist.offset
+            offset = __objc_methlist.offset
         }
+        guard let fileSlice = machO._fileSliceForSection(section: __objc_methlist),
+              let data = try? fileSlice.readData(
+                offset: 0,
+                length: __objc_methlist.size
+              ) else { return nil }
 
         return .init(
-            data: try! machO.fileHandle.readData(
-                offset: numericCast(__objc_methlist.offset + machO.headerStartOffset),
-                length: __objc_methlist.size
-            ),
+            data: data,
             offset: offset,
             align: __objc_methlist.align,
             is64Bit: machO.is64Bit

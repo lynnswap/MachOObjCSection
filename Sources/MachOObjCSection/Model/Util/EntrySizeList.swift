@@ -42,12 +42,59 @@ extension EntrySizeListProtocol {
 }
 
 extension EntrySizeListProtocol {
-    public static func size(for header: Header) -> Int {
-        let entrySize: Int = numericCast(header.entsizeAndFlags & ~Self.flagMask)
-        return Header.layoutSize + entrySize * numericCast(header.count)
+    public static func size(for header: Header) -> Int? {
+        let count: Int
+        switch ObjCMetadataTableReader.exactCount(UInt64(header.count)) {
+        case .success(let value): count = value
+        case .failure: return nil
+        }
+        guard count > 0 else { return Header.layoutSize }
+        let rawEntrySize = UInt64(header.entsizeAndFlags & ~Self.flagMask)
+        let entrySize: Int
+        switch ObjCMetadataTableReader.exactStride(rawEntrySize) {
+        case .success(let value): entrySize = value
+        case .failure: return nil
+        }
+        let byteCount: Int
+        switch ObjCMetadataTableReader.checkedByteCount(
+            count: count,
+            stride: entrySize
+        ) {
+        case .success(let value): byteCount = value
+        case .failure: return nil
+        }
+        let (size, overflow) = Header.layoutSize.addingReportingOverflow(byteCount)
+        return overflow ? nil : size
     }
 
-    public var size: Int {
-        Header.layoutSize + entrySize * numericCast(count)
+    public var size: Int? {
+        Self.size(for: header)
+    }
+
+    internal static func checkedSize(
+        for header: Header,
+        expectedEntrySize: Int
+    ) -> Int? {
+        let count: Int
+        switch ObjCMetadataTableReader.exactCount(UInt64(header.count)) {
+        case .success(let value): count = value
+        case .failure: return nil
+        }
+        guard count > 0 else { return Header.layoutSize }
+        guard let advertisedEntrySize = Int(
+            exactly: header.entsizeAndFlags & ~Self.flagMask
+        ), advertisedEntrySize == expectedEntrySize else {
+            return nil
+        }
+        let byteCount: Int
+        switch ObjCMetadataTableReader.checkedByteCount(
+            count: count,
+            stride: advertisedEntrySize
+        ) {
+        case .success(let value): byteCount = value
+        case .failure: return nil
+        }
+        let (size, overflow) = Header.layoutSize.addingReportingOverflow(byteCount)
+        return overflow ? nil : size
     }
 }

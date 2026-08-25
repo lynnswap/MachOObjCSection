@@ -56,38 +56,48 @@ extension MachOImage.ObjCMethodLists {
         }
 
         public mutating func next() -> Element? {
-            guard nextOffset < tableSize else {
+            guard tableSize >= 0, nextOffset >= 0, nextOffset < tableSize else {
                 return nil
             }
-            let ptr = basePointer
-                .advanced(by: nextOffset)
-
-            let header = ptr.assumingMemoryBound(to: Element.Header.self).pointee
-            let listSize = Element.size(for: header)
-
-            guard nextOffset + listSize <= tableSize else {
-                return nil
+            let baseAddress = UInt(bitPattern: basePointer)
+            let (headerAddress, addressOverflow) = baseAddress.addingReportingOverflow(
+                UInt(nextOffset)
+            )
+            guard !addressOverflow else { return nil }
+            let headerEntries: [ObjCMetadataTableEntry<Element.Header>]
+            switch ObjCMetadataTableReader.readImage(
+                address: headerAddress,
+                count: 1,
+                as: Element.Header.self
+            ) {
+            case .success(let value): headerEntries = value
+            case .failure: return nil
             }
-
+            guard let header = headerEntries.first?.value else { return nil }
+            let (listOffset, listOffsetOverflow) = tableStartOffset.addingReportingOverflow(
+                nextOffset
+            )
+            guard !listOffsetOverflow else { return nil }
             let list = ObjCMethodList(
-                ptr: ptr,
-                offset: tableStartOffset + nextOffset,
+                offset: listOffset,
+                header: header,
                 is64Bit: is64Bit
             )
-            guard list.isValidEntrySize(is64Bit: is64Bit) else {
-                preconditionFailure()
+            let expectedEntrySize = list.expectedEntrySize(is64Bit: is64Bit)
+            guard let listSize = Element.checkedSize(
+                for: header,
+                expectedEntrySize: expectedEntrySize
+            ), listSize <= tableSize - nextOffset else {
+                return nil
             }
-
-            defer {
-                nextOffset += list.size
-                nextOffset += nextOffset % numericCast(power(2, align))
-            }
-
+            let (endOffset, endOverflow) = nextOffset.addingReportingOverflow(listSize)
+            guard !endOverflow,
+                  let followingOffset = checkedAlignedOffset(
+                    endOffset,
+                    alignmentExponent: align
+                  ) else { return nil }
+            nextOffset = followingOffset
             return list
         }
     }
-}
-
-func power(_ x: Int, _ n: Int ) -> Int {
-    (1..<n).reduce(into: x, { result, _ in result *= 2 })
 }

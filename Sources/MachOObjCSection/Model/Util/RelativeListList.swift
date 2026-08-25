@@ -220,12 +220,20 @@ extension RelativeListListProtocol {
         case .success(let value): countAndStride = value
         case .failure(let failure): return .failure(failure)
         }
+        let (logicalTableOffset, logicalOverflow) = offset.addingReportingOverflow(
+            MemoryLayout<Header>.size
+        )
+        guard !logicalOverflow else {
+            return .failure(
+                .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
+            )
+        }
 
         let layouts: [Entry.Layout]
         switch ObjCMetadataTableReader.readFile(
             fileHandle,
             offset: tableOffset,
-            logicalOffset: offset + MemoryLayout<Header>.size,
+            logicalOffset: logicalTableOffset,
             count: countAndStride.count,
             stride: countAndStride.stride,
             as: Entry.Layout.self
@@ -251,21 +259,6 @@ extension RelativeListListProtocol {
         case .success(let value): countAndStride = value
         case .failure(let failure): return .failure(failure)
         }
-        let byteCount: Int
-        switch ObjCMetadataTableReader.checkedByteCount(
-            count: countAndStride.count,
-            stride: countAndStride.stride
-        ) {
-        case .success(let value):
-            byteCount = value
-        case .failure(let failure):
-            return .failure(
-                .table(
-                    outerListOffset: offset,
-                    reason: failure.relativeListReason
-                )
-            )
-        }
         guard let listAddress = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)) else {
             return .failure(
                 .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
@@ -274,31 +267,24 @@ extension RelativeListListProtocol {
         let (tableAddress, tableOverflow) = listAddress.addingReportingOverflow(
             UInt(MemoryLayout<Header>.size)
         )
-        let (_, endOverflow) = tableAddress.addingReportingOverflow(UInt(byteCount))
-        guard !tableOverflow, !endOverflow else {
+        guard !tableOverflow else {
             return .failure(
                 .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
             )
         }
-        if byteCount > 0 {
-            guard let tablePointer = UnsafeRawPointer(bitPattern: tableAddress),
-                  isPointerSafelyReadable(tablePointer, length: byteCount) else {
-                return .failure(
-                    .table(
-                        outerListOffset: offset,
-                        reason: .unreadableImageRange(
-                            address: tableAddress,
-                            byteCount: byteCount
-                        )
-                    )
-                )
-            }
-        }
 
         let tableEntries: [ObjCMetadataTableEntry<Entry.Layout>]
+        let (logicalTableOffset, logicalOverflow) = offset.addingReportingOverflow(
+            MemoryLayout<Header>.size
+        )
+        guard !logicalOverflow else {
+            return .failure(
+                .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
+            )
+        }
         switch ObjCMetadataTableReader.readImage(
             address: tableAddress,
-            logicalOffset: offset + MemoryLayout<Header>.size,
+            logicalOffset: logicalTableOffset,
             count: countAndStride.count,
             stride: countAndStride.stride,
             as: Entry.Layout.self

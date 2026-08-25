@@ -58,7 +58,9 @@ extension ObjCPropertyList {
     }
 
     func isValidEntrySize(is64Bit: Bool) -> Bool {
-        expectedEntrySize(is64Bit: is64Bit) == entrySize
+        guard header.count > 0 else { return true }
+        return Int(exactly: header.entsizeAndFlags & ~Self.flagMask)
+            == expectedEntrySize(is64Bit: is64Bit)
     }
 }
 
@@ -116,19 +118,35 @@ extension ObjCPropertyList {
             case .failure(let failure):
                 return .failure(failure)
             case .success(let entries):
-                let properties = entries.compactMap { entry -> ObjCProperty.UnresolvedProperty? in
-                    guard let fieldOffset = entry.logicalOffset else { return nil }
-                    return ObjCProperty.UnresolvedProperty(
-                        name: .init(
-                            fieldOffset: fieldOffset,
-                            value: entry.value.name
-                        ),
-                        attributes: .init(
-                            fieldOffset: fieldOffset + 8,
-                            value: entry.value.attributes
+                var unresolved: [ObjCProperty.UnresolvedProperty] = []
+                var failures: [ObjCMetadataTableEntryFailure] = []
+                unresolved.reserveCapacity(entries.count)
+                for entry in entries {
+                    guard let fieldOffset = entry.logicalOffset else {
+                        failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
+                        continue
+                    }
+                    let (attributesOffset, overflow) = fieldOffset.addingReportingOverflow(
+                        MemoryLayout<UInt64>.size
+                    )
+                    guard !overflow else {
+                        failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
+                        continue
+                    }
+                    unresolved.append(
+                        ObjCProperty.UnresolvedProperty(
+                            name: .init(
+                                fieldOffset: fieldOffset,
+                                value: entry.value.name
+                            ),
+                            attributes: .init(
+                                fieldOffset: attributesOffset,
+                                value: entry.value.attributes
+                            )
                         )
                     )
-                }.compactMap { machO.resolveRebase($0) }
+                }
+                let properties = unresolved.compactMap { machO.resolveRebase($0) }
                 .map {
                     var name = ""
                     if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
@@ -149,7 +167,7 @@ extension ObjCPropertyList {
                         attributes: attributes
                     )
                 }
-                return .success(.init(values: properties, failures: []))
+                return .success(.init(values: properties, failures: failures))
             }
         } else {
             switch readFileTable(
@@ -161,19 +179,35 @@ extension ObjCPropertyList {
             case .failure(let failure):
                 return .failure(failure)
             case .success(let entries):
-                let properties = entries.compactMap { entry -> ObjCProperty.UnresolvedProperty? in
-                    guard let fieldOffset = entry.logicalOffset else { return nil }
-                    return ObjCProperty.UnresolvedProperty(
-                        name: .init(
-                            fieldOffset: fieldOffset,
-                            value: UInt64(entry.value.name)
-                        ),
-                        attributes: .init(
-                            fieldOffset: fieldOffset + 4,
-                            value: UInt64(entry.value.attributes)
+                var unresolved: [ObjCProperty.UnresolvedProperty] = []
+                var failures: [ObjCMetadataTableEntryFailure] = []
+                unresolved.reserveCapacity(entries.count)
+                for entry in entries {
+                    guard let fieldOffset = entry.logicalOffset else {
+                        failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
+                        continue
+                    }
+                    let (attributesOffset, overflow) = fieldOffset.addingReportingOverflow(
+                        MemoryLayout<UInt32>.size
+                    )
+                    guard !overflow else {
+                        failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
+                        continue
+                    }
+                    unresolved.append(
+                        ObjCProperty.UnresolvedProperty(
+                            name: .init(
+                                fieldOffset: fieldOffset,
+                                value: UInt64(entry.value.name)
+                            ),
+                            attributes: .init(
+                                fieldOffset: attributesOffset,
+                                value: UInt64(entry.value.attributes)
+                            )
                         )
                     )
-                }.compactMap { machO.resolveRebase($0) }
+                }
+                let properties = unresolved.compactMap { machO.resolveRebase($0) }
                 .map {
                     var name = ""
                     if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
@@ -194,7 +228,7 @@ extension ObjCPropertyList {
                         attributes: attributes
                     )
                 }
-                return .success(.init(values: properties, failures: []))
+                return .success(.init(values: properties, failures: failures))
             }
         }
     }

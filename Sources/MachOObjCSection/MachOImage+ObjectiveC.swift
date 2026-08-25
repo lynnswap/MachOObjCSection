@@ -76,12 +76,17 @@ extension MachOImage.ObjectiveC {
             return nil
         }
 
-        guard let start = UnsafeRawPointer(
-            bitPattern: __objc_methlist.address + vmaddrSlide
-        ) else { return nil }
+        guard __objc_methlist.size >= 0,
+              let sectionAddress = UInt(exactly: __objc_methlist.address),
+              let startAddress = addingSignedDisplacement(vmaddrSlide, to: sectionAddress),
+              let start = UnsafeRawPointer(bitPattern: startAddress),
+              let sectionOffset = signedDisplacement(
+                from: UInt(bitPattern: machO.ptr),
+                to: startAddress
+              ) else { return nil }
 
         return .init(
-            offset: Int(bitPattern: start) - Int(bitPattern: machO.ptr),
+            offset: sectionOffset,
             basePointer: start,
             tableSize: __objc_methlist.size,
             align: __objc_methlist.align,

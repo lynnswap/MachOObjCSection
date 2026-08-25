@@ -39,17 +39,26 @@ extension ObjCMemberRelativeListListProtocol {
         return .success(count)
     }
 
-    private func validateEntrySize(
+    private func checkedEntrySize(
         of list: List
-    ) -> ObjCRelativeListFailure.Reason? {
+    ) -> Result<Int, ObjCRelativeListFailure.Reason> {
         let expected = expectedEntrySize(for: list)
-        guard list.entrySize == expected else {
-            return .invalidListEntrySize(
-                advertised: list.entrySize,
-                expected: expected
+        let rawEntrySize = list.header.entsizeAndFlags & ~List.flagMask
+        guard let entrySize = Int(exactly: rawEntrySize) else {
+            return .failure(
+                .invalidListEntrySize(
+                    advertised: Int.max,
+                    expected: expected
+                )
             )
         }
-        return nil
+        guard entrySize == expected else {
+            return .failure(.invalidListEntrySize(
+                advertised: entrySize,
+                expected: expected
+            ))
+        }
+        return .success(entrySize)
     }
 
     internal func resolveMemberLists(
@@ -91,8 +100,10 @@ extension ObjCMemberRelativeListListProtocol {
                         )
                     )
                 }
-                if let failure = validateEntrySize(of: list) {
-                    return .failure(failure)
+                let entrySize: Int
+                switch checkedEntrySize(of: list) {
+                case .success(let value): entrySize = value
+                case .failure(let failure): return .failure(failure)
                 }
                 let (tableOffset, overflow) = location.fileOffset.addingReportingOverflow(
                     UInt64(MemoryLayout<EntrySizeListHeader>.size)
@@ -105,12 +116,18 @@ extension ObjCMemberRelativeListListProtocol {
                         )
                     )
                 }
+                let (logicalTableOffset, logicalOverflow) = listOffset.addingReportingOverflow(
+                    MemoryLayout<EntrySizeListHeader>.size
+                )
+                guard !logicalOverflow else {
+                    return .failure(.invalidRelativeListLocation)
+                }
                 switch ObjCMetadataTableReader.readFile(
                     location.file,
                     offset: tableOffset,
-                    logicalOffset: listOffset + MemoryLayout<EntrySizeListHeader>.size,
+                    logicalOffset: logicalTableOffset,
                     count: count,
-                    stride: list.entrySize,
+                    stride: entrySize,
                     as: UInt8.self
                 ) {
                 case .success:
@@ -164,16 +181,10 @@ extension ObjCMemberRelativeListListProtocol {
                         )
                     )
                 }
-                if let failure = validateEntrySize(of: list) {
-                    return .failure(failure)
-                }
-                let byteCount: Int
-                switch ObjCMetadataTableReader.checkedByteCount(
-                    count: count,
-                    stride: list.entrySize
-                ) {
-                case .success(let value): byteCount = value
-                case .failure(let failure): return .failure(failure.relativeListReason)
+                let entrySize: Int
+                switch checkedEntrySize(of: list) {
+                case .success(let value): entrySize = value
+                case .failure(let failure): return .failure(failure)
                 }
                 let (tableAddress, overflow) = UInt(bitPattern: pointer).addingReportingOverflow(
                     UInt(MemoryLayout<EntrySizeListHeader>.size)
@@ -181,18 +192,24 @@ extension ObjCMemberRelativeListListProtocol {
                 guard !overflow else {
                     return .failure(.invalidRelativeListLocation)
                 }
-                if byteCount > 0 {
-                    guard let tablePointer = UnsafeRawPointer(bitPattern: tableAddress),
-                          isPointerSafelyReadable(tablePointer, length: byteCount) else {
-                        return .failure(
-                            .unreadableImageRange(
-                                address: tableAddress,
-                                byteCount: byteCount
-                            )
-                        )
-                    }
+                let (logicalTableOffset, logicalOverflow) = listOffset.addingReportingOverflow(
+                    MemoryLayout<EntrySizeListHeader>.size
+                )
+                guard !logicalOverflow else {
+                    return .failure(.invalidRelativeListLocation)
                 }
-                return .success(list)
+                switch ObjCMetadataTableReader.readImage(
+                    address: tableAddress,
+                    logicalOffset: logicalTableOffset,
+                    count: count,
+                    stride: entrySize,
+                    as: UInt8.self
+                ) {
+                case .success:
+                    return .success(list)
+                case .failure(let failure):
+                    return .failure(failure.relativeListReason)
+                }
             }
         )
     }
