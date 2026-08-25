@@ -708,28 +708,81 @@ extension ObjCClassProtocol {
         in machO: MachOFile,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCMetadataReadResult<ObjCClassInfo> {
-        let subjectName = classROData(in: machO)?.name(in: machO) ?? "<unknown>"
-        var context = ObjCProtocolTraversalContext(subject: .class(name: subjectName))
-        let value = _readInfo(in: machO, options: options, context: &context)
+        var fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
+        let data: ClassROData
+        switch readDirectClassROData(in: machO) {
+        case .absent:
+            return .init(value: nil, diagnostics: [])
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: nil,
+                    role: .instance,
+                    classObjectOffset: offset,
+                    failure: failure
+                )
+            )
+            return .init(
+                value: nil,
+                diagnostics: [],
+                fieldDiagnostics: fieldDiagnostics
+            )
+        case .value(let value):
+            data = value
+        }
+        guard let name = data.name(in: machO) else {
+            return .init(value: nil, diagnostics: [])
+        }
+
+        var context = ObjCProtocolTraversalContext(subject: .class(name: name))
+        let value = _readInfo(
+            in: machO,
+            data: data,
+            name: name,
+            options: options,
+            context: &context,
+            fieldDiagnostics: &fieldDiagnostics
+        )
         return .init(
             value: value,
             diagnostics: context.diagnostics,
-            memberListDiagnostics: context.memberListDiagnostics
+            memberListDiagnostics: context.memberListDiagnostics,
+            fieldDiagnostics: fieldDiagnostics
         )
     }
 
     private func _readInfo(
         in machO: MachOFile,
+        data: ClassROData,
+        name: String,
         options: ObjCInfoOptions,
-        context: inout ObjCProtocolTraversalContext
+        context: inout ObjCProtocolTraversalContext,
+        fieldDiagnostics: inout [ObjCMetadataFieldDiagnostic]
     ) -> ObjCClassInfo? {
-        guard let data = classROData(in: machO),
-              let (targetMachO, meta) = metaClass(in: machO),
-              let metaData = meta.classROData(in: targetMachO),
-              let name = data.name(in: machO) else {
+        guard let (targetMachO, meta) = metaClass(in: machO) else { return nil }
+
+        let metaData: ClassROData?
+        switch meta.readDirectClassROData(in: targetMachO) {
+        case .absent:
             return nil
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: name,
+                    role: .metaclass,
+                    classObjectOffset: meta.offset,
+                    failure: failure
+                )
+            )
+            metaData = nil
+        case .value(let value):
+            metaData = value
         }
         let imagePath = machO.imagePath
+        let subject = ObjCMetadataFieldDiagnostic.Subject.namedClass(
+            name: name,
+            objectOffset: offset
+        )
 
         let protocols = data
             .protocolListResolutions(in: machO)
@@ -738,10 +791,40 @@ extension ObjCClassProtocol {
                 context: &context
             )
 
-        let ivarList = data.ivarList(in: machO)
-        let ivars = ivarList?
-            .ivars(in: machO)?
-            .compactMap { $0.info(in: machO) } ?? []
+        var ivars: [ObjCIvarInfo] = []
+        if let ivarList = data.ivarList(in: machO),
+           let entries = ivarList.ivars(in: machO) {
+            ivars.reserveCapacity(entries.count)
+            for (index, ivar) in entries.enumerated() {
+                guard let ivarName = ivar.name(in: machO),
+                      let type = ivar.type(in: machO) else {
+                    continue
+                }
+                switch ivar.readOffset(in: machO) {
+                case .absent:
+                    continue
+                case .failure(let failure):
+                    fieldDiagnostics.append(
+                        .ivarOffset(
+                            .init(
+                                subject: subject,
+                                index: index,
+                                name: ivarName,
+                                failure: failure
+                            )
+                        )
+                    )
+                case .value(let value):
+                    ivars.append(
+                        .init(
+                            name: ivarName,
+                            typeEncoding: type,
+                            offset: numericCast(value)
+                        )
+                    )
+                }
+            }
+        }
 
         // Instance
         let properties = data
@@ -769,29 +852,35 @@ extension ObjCClassProtocol {
             }
 
         // Meta
-        let classProperties = metaData
-            .propertyListResolutions(in: targetMachO)
-            .memberValues(
-                className: name,
-                kind: .classProperty,
-                context: &context
-            ) { source, list in
-                list.properties(in: source).compactMap {
-                    $0.info(isClassProperty: true)
+        let classProperties: [ObjCPropertyInfo]
+        let classMethods: [ObjCMethodInfo]
+        if let metaData {
+            classProperties = metaData
+                .propertyListResolutions(in: targetMachO)
+                .memberValues(
+                    className: name,
+                    kind: .classProperty,
+                    context: &context
+                ) { source, list in
+                    list.properties(in: source).compactMap {
+                        $0.info(isClassProperty: true)
+                    }
                 }
-            }
-
-        let classMethods = metaData
-            .methodListResolutions(in: targetMachO)
-            .memberValues(
-                className: name,
-                kind: .classMethod,
-                context: &context
-            ) { source, list in
-                (list.methods(in: source) ?? []).compactMap {
-                    $0.info(isClassMethod: true)
+            classMethods = metaData
+                .methodListResolutions(in: targetMachO)
+                .memberValues(
+                    className: name,
+                    kind: .classMethod,
+                    context: &context
+                ) { source, list in
+                    (list.methods(in: source) ?? []).compactMap {
+                        $0.info(isClassMethod: true)
+                    }
                 }
-            }
+        } else {
+            classProperties = []
+            classMethods = []
+        }
 
         let superClassName = superClassName(in: machO)
 
@@ -811,46 +900,20 @@ extension ObjCClassProtocol {
     }
 
     public func name(in machO: MachOImage) -> String? {
-        data(in: machO)?.data.name(in: machO)
+        readClassRODataForInfo(in: machO).value?.name(in: machO)
     }
 
-    private func data(in machO: MachOImage) -> (machO: MachOImage, data: ClassROData, metaData: ClassROData)? {
-        guard let (targetMachO, meta) = metaClass(in: machO) else {
-            return nil
-        }
-        let data: ClassROData
-        let metaData: ClassROData
+    private func readClassRODataForInfo(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ClassROData> {
+        let direct = readDirectClassROData(in: machO)
+        guard case .absent = direct else { return direct }
+        guard let rw = classRWData(in: machO) else { return .absent }
 
-        if let _data = classROData(in: machO) {
-            data = _data
-        } else if let rw = classRWData(in: machO) {
-            if let _data = rw.classROData(in: machO) {
-                data = _data
-            } else if let ext = rw.ext(in: machO),
-                      let _data = ext.classROData(in: machO) {
-                data = _data
-            } else {
-                return nil
-            }
-        } else {
-            return nil
-        }
-
-        if let _data = meta.classROData(in: targetMachO) {
-            metaData = _data
-        } else if let rw = meta.classRWData(in: targetMachO) {
-            if let _data = rw.classROData(in: targetMachO) {
-                metaData = _data
-            } else if let ext = rw.ext(in: targetMachO),
-                      let _data = ext.classROData(in: targetMachO) {
-                metaData = _data
-            } else {
-                return nil
-            }
-        } else {
-            return nil
-        }
-        return (targetMachO, data, metaData)
+        let readOnlyData = rw.readClassROData(in: machO)
+        guard case .absent = readOnlyData else { return readOnlyData }
+        guard let ext = rw.ext(in: machO) else { return .absent }
+        return ext.readClassROData(in: machO)
     }
 
     public func info(
@@ -867,27 +930,80 @@ extension ObjCClassProtocol {
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCMetadataReadResult<ObjCClassInfo> {
-        let subjectName = data(in: machO)
-            .flatMap { $0.1.name(in: machO) } ?? "<unknown>"
-        var context = ObjCProtocolTraversalContext(subject: .class(name: subjectName))
-        let value = _readInfo(in: machO, options: options, context: &context)
+        var fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
+        let data: ClassROData
+        switch readClassRODataForInfo(in: machO) {
+        case .absent:
+            return .init(value: nil, diagnostics: [])
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: nil,
+                    role: .instance,
+                    classObjectOffset: offset,
+                    failure: failure
+                )
+            )
+            return .init(
+                value: nil,
+                diagnostics: [],
+                fieldDiagnostics: fieldDiagnostics
+            )
+        case .value(let value):
+            data = value
+        }
+        guard let name = data.name(in: machO) else {
+            return .init(value: nil, diagnostics: [])
+        }
+
+        var context = ObjCProtocolTraversalContext(subject: .class(name: name))
+        let value = _readInfo(
+            in: machO,
+            data: data,
+            name: name,
+            options: options,
+            context: &context,
+            fieldDiagnostics: &fieldDiagnostics
+        )
         return .init(
             value: value,
             diagnostics: context.diagnostics,
-            memberListDiagnostics: context.memberListDiagnostics
+            memberListDiagnostics: context.memberListDiagnostics,
+            fieldDiagnostics: fieldDiagnostics
         )
     }
 
     private func _readInfo(
         in machO: MachOImage,
+        data: ClassROData,
+        name: String,
         options: ObjCInfoOptions,
-        context: inout ObjCProtocolTraversalContext
+        context: inout ObjCProtocolTraversalContext,
+        fieldDiagnostics: inout [ObjCMetadataFieldDiagnostic]
     ) -> ObjCClassInfo? {
-        guard let (targetMachO, data, metaData) = data(in: machO) else { return nil }
+        guard let (targetMachO, meta) = metaClass(in: machO) else { return nil }
 
-        guard let name = data.name(in: machO) else {
+        let metaData: ClassROData?
+        switch meta.readClassRODataForInfo(in: targetMachO) {
+        case .absent:
             return nil
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: name,
+                    role: .metaclass,
+                    classObjectOffset: meta.offset,
+                    failure: failure
+                )
+            )
+            metaData = nil
+        case .value(let value):
+            metaData = value
         }
+        let subject = ObjCMetadataFieldDiagnostic.Subject.namedClass(
+            name: name,
+            objectOffset: offset
+        )
 
         let protocols = data
             .protocolListResolutions(in: machO)
@@ -896,10 +1012,38 @@ extension ObjCClassProtocol {
                 context: &context
             )
 
-        let ivarList = data.ivarList(in: machO)
-        let ivars = ivarList?
-            .ivars(in: machO)?
-            .compactMap { $0.info(in: machO) } ?? []
+        var ivars: [ObjCIvarInfo] = []
+        if let ivarList = data.ivarList(in: machO),
+           let entries = ivarList.ivars(in: machO) {
+            ivars.reserveCapacity(entries.count)
+            for (index, ivar) in entries.enumerated() {
+                let ivarName = ivar.name(in: machO)
+                guard let type = ivar.type(in: machO) else { continue }
+                switch ivar.readOffset(in: machO) {
+                case .absent:
+                    continue
+                case .failure(let failure):
+                    fieldDiagnostics.append(
+                        .ivarOffset(
+                            .init(
+                                subject: subject,
+                                index: index,
+                                name: ivarName,
+                                failure: failure
+                            )
+                        )
+                    )
+                case .value(let value):
+                    ivars.append(
+                        .init(
+                            name: ivarName,
+                            typeEncoding: type,
+                            offset: numericCast(value)
+                        )
+                    )
+                }
+            }
+        }
 
         // Instance
         let properties = data
@@ -927,29 +1071,35 @@ extension ObjCClassProtocol {
             }
 
         // Meta
-        let classProperties = metaData
-            .propertyListResolutions(in: targetMachO)
-            .memberValues(
-                className: name,
-                kind: .classProperty,
-                context: &context
-            ) { source, list in
-                list.properties(in: source).compactMap {
-                    $0.info(isClassProperty: true)
+        let classProperties: [ObjCPropertyInfo]
+        let classMethods: [ObjCMethodInfo]
+        if let metaData {
+            classProperties = metaData
+                .propertyListResolutions(in: targetMachO)
+                .memberValues(
+                    className: name,
+                    kind: .classProperty,
+                    context: &context
+                ) { source, list in
+                    list.properties(in: source).compactMap {
+                        $0.info(isClassProperty: true)
+                    }
                 }
-            }
-
-        let classMethods = metaData
-            .methodListResolutions(in: targetMachO)
-            .memberValues(
-                className: name,
-                kind: .classMethod,
-                context: &context
-            ) { source, list in
-                list.methods(in: source).compactMap {
-                    $0.info(isClassMethod: true)
+            classMethods = metaData
+                .methodListResolutions(in: targetMachO)
+                .memberValues(
+                    className: name,
+                    kind: .classMethod,
+                    context: &context
+                ) { source, list in
+                    list.methods(in: source).compactMap {
+                        $0.info(isClassMethod: true)
+                    }
                 }
-            }
+        } else {
+            classProperties = []
+            classMethods = []
+        }
 
         let superClassName = superClassName(in: machO)
 
@@ -965,6 +1115,28 @@ extension ObjCClassProtocol {
             properties: properties,
             classMethods: classMethods,
             methods: methods
+        )
+    }
+
+    private func classRODataDiagnostic(
+        name: String?,
+        role: ObjCMetadataFieldDiagnostic.ClassRole,
+        classObjectOffset: Int,
+        failure: ObjCMetadataFieldDiagnostic.Failure
+    ) -> ObjCMetadataFieldDiagnostic {
+        let subject: ObjCMetadataFieldDiagnostic.Subject
+        if let name {
+            subject = .namedClass(name: name, objectOffset: offset)
+        } else {
+            subject = .classObject(offset: offset)
+        }
+        return .classROData(
+            .init(
+                subject: subject,
+                role: role,
+                classObjectOffset: classObjectOffset,
+                failure: failure
+            )
         )
     }
 }

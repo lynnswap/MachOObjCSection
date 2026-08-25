@@ -8,7 +8,8 @@ import Foundation
 /// A decoded Objective-C metadata value together with recoverable diagnostics.
 ///
 /// This SPI is intended for analysis tools that must distinguish absent metadata from
-/// malformed protocol references or class member lists. It has no ABI stability guarantee.
+/// malformed protocol references, class member lists, or fixed metadata fields.
+/// It has no ABI stability guarantee.
 @_spi(Diagnostics)
 public struct ObjCMetadataReadResult<Value> {
     /// The decoded value, or `nil` when the subject itself could not be decoded.
@@ -20,14 +21,19 @@ public struct ObjCMetadataReadResult<Value> {
     /// Recoverable class method/property list failures in deterministic discovery order.
     public let memberListDiagnostics: [ObjCMemberListDiagnostic]
 
+    /// Recoverable fixed-field failures in deterministic discovery order.
+    public let fieldDiagnostics: [ObjCMetadataFieldDiagnostic]
+
     internal init(
         value: Value?,
         diagnostics: [ObjCProtocolDiagnostic],
-        memberListDiagnostics: [ObjCMemberListDiagnostic] = []
+        memberListDiagnostics: [ObjCMemberListDiagnostic] = [],
+        fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
     ) {
         self.value = value
         self.diagnostics = diagnostics
         self.memberListDiagnostics = memberListDiagnostics
+        self.fieldDiagnostics = fieldDiagnostics
     }
 }
 

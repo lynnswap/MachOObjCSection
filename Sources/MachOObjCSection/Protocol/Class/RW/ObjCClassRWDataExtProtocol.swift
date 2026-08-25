@@ -34,19 +34,30 @@ extension ObjCClassRWDataExtProtocol {
     // before dereferencing.
 
     public func classROData(in machO: MachOImage) -> ObjCClassROData? {
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ro))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedAddress)) else {
-            return nil
-        }
-        let layout = ptr
-            .assumingMemoryBound(to: ObjCClassROData.Layout.self)
-            .pointee
-        let classData = ObjCClassROData(
-            layout: layout,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
+        readClassROData(in: machO).value
+    }
 
-        return classData
+    internal func readClassROData(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ObjCClassROData> {
+        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ro))
+        guard strippedAddress != 0 else { return .absent }
+        guard let address = UInt(exactly: strippedAddress),
+              let ptr = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(.missingBackingData)
+        }
+        let byteCount = MemoryLayout<ObjCClassROData.Layout>.size
+        guard isPointerSafelyReadable(ptr, length: byteCount) else {
+            return .failure(
+                .unreadableImageRange(address: address, byteCount: byteCount)
+            )
+        }
+        return .value(
+            ObjCClassROData(
+                layout: ptr.loadUnaligned(as: ObjCClassROData.Layout.self),
+                offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
+            )
+        )
     }
 
     public func methodList(in machO: MachOImage) -> ObjCMethodArray? {

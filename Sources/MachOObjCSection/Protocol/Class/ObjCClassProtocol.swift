@@ -73,6 +73,105 @@ extension ObjCClassProtocol {
 }
 
 extension ObjCClassProtocol {
+    private func classDataMask(isPhysicalIPhone: Bool) -> UInt64 {
+        switch Layout.Pointer.bitWidth {
+        case 32:
+            return numericCast(FAST_DATA_MASK_32)
+        case 64:
+            return isPhysicalIPhone
+                ? numericCast(FAST_DATA_MASK_64_IPHONE)
+                : numericCast(FAST_DATA_MASK_64)
+        default:
+            preconditionFailure(
+                "ObjCClassProtocol requires a 32-bit or 64-bit layout pointer"
+            )
+        }
+    }
+
+    internal func readDirectClassROData(
+        in machO: MachOFile
+    ) -> ObjCMetadataFieldRead<ClassROData> {
+        let mask = classDataMask(isPhysicalIPhone: machO.isPhysicalIPhone)
+
+        var unresolved = unresolvedValue(of: .dataVMAddrAndFastFlags)
+        unresolved.value &= mask
+        guard unresolved.value != 0 else { return .absent }
+        guard var resolved = machO.resolveRebase(unresolved) else {
+            return .failure(.unresolvedRebase)
+        }
+        resolved.address &= mask
+
+        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(
+            forAddress: resolved.address
+        ) else {
+            return .failure(.missingBackingData)
+        }
+
+        let classDataOffset: Int
+        if let cache = machO.cache {
+            let sharedRegionStart = cache.mainCacheHeader.sharedRegionStart
+            guard resolved.address >= sharedRegionStart,
+                  let offset = Int(exactly: resolved.address - sharedRegionStart) else {
+                return .failure(.missingBackingData)
+            }
+            classDataOffset = offset
+        } else {
+            guard let fileOffset = machO.fileOffset(of: resolved.address),
+                  let offset = Int(exactly: fileOffset) else {
+                return .failure(.missingBackingData)
+            }
+            classDataOffset = offset
+        }
+
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ClassROData.Layout.self
+        ) else {
+            return .failure(
+                .unreadableFileRange(
+                    offset: fileOffset,
+                    byteCount: MemoryLayout<ClassROData.Layout>.size
+                )
+            )
+        }
+        return .value(
+            ClassROData(layout: layout, offset: classDataOffset)
+        )
+    }
+
+    internal func readDirectClassROData(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ClassROData> {
+        guard !hasRWPointer(in: machO) else {
+            return .absent
+        }
+        let mask = classDataMask(isPhysicalIPhone: machO.isPhysicalIPhone)
+
+        let rawAddress = numericCast(layout.dataVMAddrAndFastFlags) & mask
+        guard rawAddress != 0 else { return .absent }
+        guard let address = UInt(exactly: rawAddress) else {
+            return .failure(.missingBackingData)
+        }
+        guard let pointer = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(.missingBackingData)
+        }
+        let byteCount = MemoryLayout<ClassROData.Layout>.size
+        guard isPointerSafelyReadable(pointer, length: byteCount) else {
+            return .failure(
+                .unreadableImageRange(address: address, byteCount: byteCount)
+            )
+        }
+
+        return .value(
+            ClassROData(
+                layout: pointer.loadUnaligned(as: ClassROData.Layout.self),
+                offset: Int(bitPattern: pointer) - Int(bitPattern: machO.ptr)
+            )
+        )
+    }
+}
+
+extension ObjCClassProtocol {
     public func metaClass(in machO: MachOFile) -> (MachOFile, Self)? {
         _readClass(
             field: .isa,

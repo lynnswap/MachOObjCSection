@@ -50,7 +50,7 @@ public struct ObjCClass64: LayoutWrapper, ObjCClassProtocol {
 
 extension ObjCClass64 {
     public func classROData(in machO: MachOFile) -> ClassROData? {
-        _classROData(in: machO)
+        readDirectClassROData(in: machO).value
     }
 }
 
@@ -68,8 +68,7 @@ extension ObjCClass64 {
     }
 
     public func classROData(in machO: MachOImage) -> ClassROData? {
-        if hasRWPointer(in: machO) { return nil }
-        return _classROData(in: machO)
+        readDirectClassROData(in: machO).value
     }
 
     public func classRWData(in machO: MachOImage) -> ClassRWData? {
@@ -106,10 +105,10 @@ extension ObjCClass64 {
 extension ObjCClass64 {
     /// https://github.com/apple-oss-distributions/objc4/blob/01edf1705fbc3ff78a423cd21e03dfc21eb4d780/runtime/objc-runtime-new.mm#L6746
     public func version(in machO: MachOFile) -> Int32 {
-        guard let _data = _classROData(in: machO) else {
+        guard let data = readDirectClassROData(in: machO).value else {
             return 0
         }
-        return version(for: _data)
+        return version(for: data)
     }
 
     public func version(in machO: MachOImage) -> Int32 {
@@ -117,79 +116,9 @@ extension ObjCClass64 {
            let ext = rw.ext(in: machO) {
             return numericCast(ext.version)
         }
-        guard let _data = _classROData(in: machO) else {
+        guard let data = readDirectClassROData(in: machO).value else {
             return 0
         }
-        return version(for: _data)
-    }
-}
-
-extension ObjCClass64 {
-    private func _classROData(in machO: MachOImage) -> ClassROData? {
-        let FAST_DATA_MASK: UInt
-        if machO.isPhysicalIPhone {
-            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64_IPHONE)
-        } else {
-            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64)
-        }
-
-        let address: UInt = numericCast(layout.dataVMAddrAndFastFlags) & FAST_DATA_MASK
-
-        guard let ptr = UnsafeRawPointer(bitPattern: address) else {
-            return nil
-        }
-        guard isPointerSafelyReadable(ptr, length: MemoryLayout<ClassROData.Layout>.size) else {
-            return nil
-        }
-
-        let layout = ptr
-            .assumingMemoryBound(to: ClassROData.Layout.self)
-            .pointee
-        let classData = ClassROData(
-            layout: layout,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
-
-        return classData
-    }
-
-    private func _classROData(in machO: MachOFile) -> ClassROData? {
-        let FAST_DATA_MASK: UInt64
-        if machO.isPhysicalIPhone {
-            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64_IPHONE)
-        } else {
-            FAST_DATA_MASK = numericCast(FAST_DATA_MASK_64)
-        }
-
-        var unresolved = unresolvedValue(of: .dataVMAddrAndFastFlags)
-        unresolved.value &= FAST_DATA_MASK
-        guard var resolved = machO.resolveRebase(unresolved) else { return nil }
-        resolved.address &= FAST_DATA_MASK
-
-        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: resolved.address) else {
-            return nil
-        }
-
-        let offset: Int
-        if let cache = machO.cache {
-            offset = numericCast(resolved.address - cache.mainCacheHeader.sharedRegionStart)
-        } else if let resolvedAddressFileOffset = machO.fileOffset(of: resolved.address) {
-            offset = numericCast(resolvedAddressFileOffset)
-        } else {
-            return nil
-        }
-
-        guard let layout = fileHandle.readLayout(
-            offset: fileOffset,
-            as: ClassROData.Layout.self
-        ) else {
-            return nil
-        }
-        let classData = ClassROData(
-            layout: layout,
-            offset: offset
-        )
-
-        return classData
+        return version(for: data)
     }
 }
