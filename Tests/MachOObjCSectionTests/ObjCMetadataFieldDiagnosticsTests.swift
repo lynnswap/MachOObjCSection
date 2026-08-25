@@ -142,6 +142,17 @@ final class ObjCMetadataFieldDiagnosticsTests: XCTestCase {
         }
     }
 
+    func testLoadedMetaclassVersionUsesRWFlagsWithoutAnExtension() {
+        let meta = SyntheticFieldImageFixture(
+            path: .readWriteData,
+            readWriteFlags: ObjCClassRWDataFlags.meta.rawValue
+        )
+        let instance = SyntheticFieldImageFixture(path: .readWriteData)
+
+        XCTAssertEqual(meta.objcClass.version(in: meta.machO), 7)
+        XCTAssertEqual(instance.objcClass.version(in: instance.machO), 0)
+    }
+
     func testLoadedIvarOffsetDistinguishesUnreadableStorageFromAbsence() {
         let fixture = SyntheticFieldImageFixture(path: .direct)
         let unreadable = ObjCIvar64(
@@ -384,7 +395,7 @@ private final class SyntheticFieldImageFixture {
     let objcClass: ObjCClass64
     private let storage: UnsafeMutableRawPointer
 
-    init(path: Path) {
+    init(path: Path, readWriteFlags: UInt32 = 0) {
         let storage = UnsafeMutableRawPointer.allocate(
             byteCount: Self.storageSize,
             alignment: 16
@@ -421,7 +432,7 @@ private final class SyntheticFieldImageFixture {
             let address = baseAddress + UInt64(Self.readWriteDataOffset)
             storage.advanced(by: Self.readWriteDataOffset).storeUnaligned(
                 ObjCClassRWData64.Layout(
-                    flags: 0,
+                    flags: readWriteFlags,
                     witness: 0,
                     index: 0,
                     ro_or_rw_ext: UInt64(Self.unreadableAddress),
@@ -435,7 +446,7 @@ private final class SyntheticFieldImageFixture {
             let extensionAddress = baseAddress + UInt64(Self.readWriteExtensionOffset)
             storage.advanced(by: Self.readWriteDataOffset).storeUnaligned(
                 ObjCClassRWData64.Layout(
-                    flags: 0,
+                    flags: readWriteFlags,
                     witness: 0,
                     index: 0,
                     ro_or_rw_ext: extensionAddress | 1,

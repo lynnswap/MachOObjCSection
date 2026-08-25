@@ -112,9 +112,11 @@ extension ObjCClass64 {
     }
 
     public func version(in machO: MachOImage) -> Int32 {
-        if let rw = classRWData(in: machO),
-           let ext = rw.ext(in: machO) {
-            return numericCast(ext.version)
+        if let rw = classRWData(in: machO) {
+            if let ext = rw.ext(in: machO) {
+                return numericCast(ext.version)
+            }
+            return rw.flags.contains(.meta) ? 7 : 0
         }
         guard let data = readDirectClassROData(in: machO).value else {
             return 0
