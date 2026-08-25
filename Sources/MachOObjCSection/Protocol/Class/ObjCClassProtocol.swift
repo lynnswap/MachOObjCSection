@@ -212,7 +212,12 @@ extension ObjCClassProtocol {
             return nil
         }
 
-        let layout: Layout = fileHandle.read(offset: fileOffset)
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: Layout.self
+        ) else {
+            return nil
+        }
         let cls: Self = .init(
             layout: layout,
             offset: numericCast(resolved.offset)
@@ -250,7 +255,12 @@ extension ObjCClassProtocol {
             targetMachO = machO
         }
 
-        let layout: Layout = fileHandle.read(offset: fileOffset)
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: Layout.self
+        ) else {
+            return nil
+        }
         let cls: Self = .init(
             layout: layout,
             offset: numericCast(resolved.offset)

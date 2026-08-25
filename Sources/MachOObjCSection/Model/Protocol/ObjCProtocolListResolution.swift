@@ -43,7 +43,7 @@ private func resolveRegularProtocolListFile<List: ObjCProtocolListProtocol, Poin
     guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: resolved) else {
         return .failure(.init(listOffset: listOffset, failure: .missingListBackingData))
     }
-    guard let header: List.Header = fileHandle.readProtocolLayout(
+    guard let header: List.Header = fileHandle.readLayout(
         offset: fileOffset,
         as: List.Header.self
     ) else {
@@ -169,7 +169,7 @@ extension ObjCClassRODataProtocol {
         guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: resolved) else {
             return .failure(.init(listOffset: relativeOffset, failure: .missingListBackingData))
         }
-        guard let header: ObjCProtocolRelativeListList.Header = fileHandle.readProtocolLayout(
+        guard let header: ObjCProtocolRelativeListList.Header = fileHandle.readLayout(
             offset: fileOffset,
             as: ObjCProtocolRelativeListList.Header.self
         ) else {

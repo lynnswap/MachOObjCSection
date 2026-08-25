@@ -309,9 +309,12 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Categgory.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
+                guard let layout = fileHandle.readLayout(
+                    offset: fileOffset,
+                    as: Categgory.Layout.self
+                ) else {
+                    return nil
+                }
                 return .init(
                     layout: layout,
                     offset: numericCast(resolved.offset),
@@ -362,9 +365,12 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Class.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
+                guard let layout = fileHandle.readLayout(
+                    offset: fileOffset,
+                    as: Class.Layout.self
+                ) else {
+                    return nil
+                }
                 return .init(
                     layout: layout,
                     offset: numericCast(resolved.offset)
@@ -414,9 +420,12 @@ extension MachOFile.ObjectiveC {
                     return nil
                 }
 
-                let layout: Protocol.Layout = fileHandle.read(
-                    offset: fileOffset
-                )
+                guard let layout = fileHandle.readLayout(
+                    offset: fileOffset,
+                    as: Protocol.Layout.self
+                ) else {
+                    return nil
+                }
                 return .init(
                     layout: layout,
                     offset: numericCast(resolved.offset)

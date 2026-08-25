@@ -50,12 +50,10 @@ extension ObjCIvarProtocol {
             return nil
         }
 
-        return try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<UInt32>.size
-        ).withUnsafeBytes {
-            $0.load(as: UInt32.self)
-        }
+        return fileHandle.readLayout(
+            offset: fileOffset,
+            as: UInt32.self
+        )
     }
 
     public func name(in machO: MachOFile) -> String? {
@@ -90,10 +88,12 @@ extension ObjCIvarProtocol {
 extension ObjCIvarProtocol {
     public func offset(in machO: MachOImage) -> UInt32? {
         guard layout.offset > 0 else { return nil }
-        let ptr = UnsafeRawPointer(
-            bitPattern: UInt(layout.offset)
-        )
-        return ptr!.assumingMemoryBound(to: UInt32.self).pointee
+        guard let address = UInt(exactly: layout.offset),
+              let ptr = UnsafeRawPointer(bitPattern: address),
+              isPointerSafelyReadable(ptr, length: MemoryLayout<UInt32>.size) else {
+            return nil
+        }
+        return ptr.loadUnaligned(as: UInt32.self)
     }
 
     public func name(in machO: MachOImage) -> String {

@@ -98,7 +98,12 @@ extension ObjCMethodRelativeListList {
             return nil
         }
 
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
+        guard let header = location.cache.fileHandle.readLayout(
+            offset: location.fileOffset,
+            as: List.Header.self
+        ) else {
+            return nil
+        }
         let list = List(
             offset: listOffset,
             header: header,

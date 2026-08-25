@@ -118,127 +118,22 @@ extension _FileIOProtocol {
 
 extension _FileIOProtocol {
     @inline(__always)
-    func read<Element>(
-        offset: UInt64
-    ) -> Optional<Element> where Element: LayoutWrapper {
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        return try! read(offset: numericCast(offset), as: Element.self)
-    }
-
-    @inline(__always)
-    func read<Element>(
-        offset: UInt64
-    ) -> Optional<Element> {
-        try! read(offset: numericCast(offset), as: Element.self)
-    }
-
-
-    @_disfavoredOverload
-    @inline(__always)
-    func read<Element>(
-        offset: UInt64
-    ) -> Element where Element: LayoutWrapper {
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        return try! read(offset: numericCast(offset), as: Element.self)
-    }
-
-    @_disfavoredOverload
-    @inline(__always)
-    func read<Element>(
-        offset: UInt64
-    ) -> Element {
-        try! read(offset: numericCast(offset), as: Element.self)
-    }
-}
-
-extension _FileIOProtocol {
-    func read<Element>(
+    func readLayout<Layout>(
         offset: UInt64,
-        swapHandler: ((inout Data) -> Void)?
-    ) -> Optional<Element> where Element: LayoutWrapper {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: Element.layoutSize
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= Element.layoutSize,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
+        as layoutType: Layout.Type
+    ) -> Layout? {
+        let byteCount = MemoryLayout<Layout>.size
+        guard let readOffset = Int(exactly: offset),
+              readOffset <= size,
+              byteCount <= size - readOffset,
+              let data = try? readData(offset: readOffset, length: byteCount) else {
+            return nil
+        }
+        return data.withUnsafeBytes { bytes in
+            bytes.loadUnaligned(as: layoutType)
         }
     }
 
-    func read<Element>(
-        offset: UInt64,
-        swapHandler: ((inout Data) -> Void)?
-    ) -> Optional<Element> {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: MemoryLayout<Element>.size
-        )
-        precondition(
-            data.count >= MemoryLayout<Element>.size,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
-        }
-    }
-
-    @_disfavoredOverload
-    func read<Element>(
-        offset: UInt64,
-        swapHandler: ((inout Data) -> Void)?
-    ) -> Element where Element: LayoutWrapper {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: Element.layoutSize
-        )
-        precondition(
-            Element.layoutSize == MemoryLayout<Element>.size,
-            "Invalid Layout Size"
-        )
-        precondition(
-            data.count >= Element.layoutSize,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
-        }
-    }
-
-    @_disfavoredOverload
-    func read<Element>(
-        offset: UInt64,
-        swapHandler: ((inout Data) -> Void)?
-    ) -> Element {
-        var data = try! readData(
-            offset: numericCast(offset),
-            length: MemoryLayout<Element>.size
-        )
-        precondition(
-            data.count >= MemoryLayout<Element>.size,
-            "Invalid Data Size"
-        )
-        if let swapHandler { swapHandler(&data) }
-        return data.withUnsafeBytes {
-            $0.load(as: Element.self)
-        }
-    }
 }
 
 extension _FileIOProtocol {

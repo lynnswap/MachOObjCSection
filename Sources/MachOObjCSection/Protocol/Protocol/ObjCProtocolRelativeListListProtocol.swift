@@ -93,7 +93,7 @@ extension ObjCProtocolRelativeListListProtocol {
             in: machO,
             locationResolver: locationResolver,
             makeList: { location, _, listOffset in
-                guard let header: List.Header = location.file.readProtocolLayout(
+                guard let header: List.Header = location.file.readLayout(
                     offset: location.fileOffset,
                     as: List.Header.self
                 ) else {

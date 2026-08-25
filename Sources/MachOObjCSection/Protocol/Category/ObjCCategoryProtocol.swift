@@ -338,7 +338,12 @@ extension ObjCCategoryProtocol {
             targetMachO = machO
         }
 
-        let layout: ObjCClass.Layout = fileHandle.read(offset: fileOffset)
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCClass.Layout.self
+        ) else {
+            return nil
+        }
         let cls: ObjCClass = .init(
             layout: layout,
             offset: numericCast(resolved.offset)
@@ -368,7 +373,12 @@ extension ObjCCategoryProtocol {
             targetMachO = machO
         }
 
-        let layout: ObjCStubClass.Layout = fileHandle.read(offset: fileOffset)
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCStubClass.Layout.self
+        ) else {
+            return nil
+        }
         let cls: ObjCStubClass = .init(
             layout: layout,
             offset: numericCast(resolved.offset)
@@ -416,7 +426,12 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let header: ObjCMethodList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCMethodList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCMethodList(
             offset: numericCast(resolved.offset),
             header: header,
@@ -443,7 +458,12 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        let header: ObjCPropertyList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCPropertyList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCPropertyList(
             offset: numericCast(resolved.offset),
             header: header,
@@ -470,7 +490,7 @@ extension ObjCCategoryProtocol {
             return nil
         }
 
-        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+        guard let header: ObjCProtocolList.Header = fileHandle.readLayout(
             offset: fileOffset,
             as: ObjCProtocolList.Header.self
         ) else {

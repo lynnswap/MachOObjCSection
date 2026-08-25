@@ -160,7 +160,12 @@ extension ObjCClass32 {
             return nil
         }
 
-        let layout: ClassROData.Layout = fileHandle.read(offset: fileOffset)
+        guard let layout = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ClassROData.Layout.self
+        ) else {
+            return nil
+        }
         let classData = ClassROData(
             layout: layout,
             offset: offset

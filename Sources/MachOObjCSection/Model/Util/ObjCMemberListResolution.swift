@@ -60,7 +60,7 @@ extension ObjCMemberRelativeListListProtocol {
             in: machO,
             locationResolver: locationResolver,
             makeList: { location, _, listOffset in
-                guard let header: EntrySizeListHeader = location.file.readProtocolLayout(
+                guard let header: EntrySizeListHeader = location.file.readLayout(
                     offset: location.fileOffset,
                     as: EntrySizeListHeader.self
                 ) else {
@@ -228,7 +228,7 @@ extension ObjCClassRODataProtocol {
                 )
             )
         }
-        guard let header: EntrySizeListHeader = fileHandle.readProtocolLayout(
+        guard let header: EntrySizeListHeader = fileHandle.readLayout(
             offset: fileOffset,
             as: EntrySizeListHeader.self
         ) else {

@@ -110,7 +110,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCMethodList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCMethodList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCMethodList(
             offset: numericCast(resolved.offset),
             header: header,
@@ -134,7 +139,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCPropertyList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCPropertyList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCPropertyList(
             offset: numericCast(resolved.offset),
             header: header,
@@ -157,7 +167,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCIvarList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCIvarList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCIvarList(
             header: header,
             offset: numericCast(resolved.offset)
@@ -181,7 +196,7 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+        guard let header: ObjCProtocolList.Header = fileHandle.readLayout(
             offset: fileOffset,
             as: ObjCProtocolList.Header.self
         ) else {
@@ -325,7 +340,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCMethodRelativeListList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCMethodRelativeListList.Header.self
+        ) else {
+            return nil
+        }
         let lists = ObjCMethodRelativeListList(
             offset: numericCast(resolved.offset),
             header: header
@@ -347,7 +367,12 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        let header: ObjCPropertyRelativeListList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCPropertyRelativeListList.Header.self
+        ) else {
+            return nil
+        }
         let lists = ObjCPropertyRelativeListList(
             offset: numericCast(resolved.offset),
             header: header
@@ -369,7 +394,7 @@ extension ObjCClassRODataProtocol {
             return nil
         }
 
-        guard let header: ObjCProtocolRelativeListList.Header = fileHandle.readProtocolLayout(
+        guard let header: ObjCProtocolRelativeListList.Header = fileHandle.readLayout(
             offset: fileOffset,
             as: ObjCProtocolRelativeListList.Header.self
         ) else {

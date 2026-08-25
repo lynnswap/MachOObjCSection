@@ -224,7 +224,7 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        guard let header: ObjCProtocolList.Header = fileHandle.readProtocolLayout(
+        guard let header: ObjCProtocolList.Header = fileHandle.readLayout(
             offset: fileOffset,
             as: ObjCProtocolList.Header.self
         ) else {
@@ -282,9 +282,12 @@ extension ObjCProtocolProtocol {
         }
 
         if machO.is64Bit {
-            let address: UInt64 = try! fileHandle.read(
-                offset: numericCast(fileOffset)
-            )
+            guard let address = fileHandle.readLayout(
+                offset: fileOffset,
+                as: UInt64.self
+            ) else {
+                return nil
+            }
             guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: address) else {
                 return nil
             }
@@ -293,9 +296,12 @@ extension ObjCProtocolProtocol {
                 offset: fileOffset
             )
         } else {
-            let _address: UInt32 = try! fileHandle.read(
-                offset: numericCast(fileOffset)
-            )
+            guard let _address = fileHandle.readLayout(
+                offset: fileOffset,
+                as: UInt32.self
+            ) else {
+                return nil
+            }
             let address: UInt64 = numericCast(_address)
             guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forAddress: address) else {
                 return nil
@@ -353,7 +359,12 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let header: ObjCMethodList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCMethodList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCMethodList(
             offset: numericCast(resolved.offset),
             header: header,
@@ -378,7 +389,12 @@ extension ObjCProtocolProtocol {
             return nil
         }
 
-        let header: ObjCPropertyList.Header = fileHandle.read(offset: fileOffset)
+        guard let header = fileHandle.readLayout(
+            offset: fileOffset,
+            as: ObjCPropertyList.Header.self
+        ) else {
+            return nil
+        }
         let list = ObjCPropertyList(
             offset: numericCast(resolved.offset),
             header: header,

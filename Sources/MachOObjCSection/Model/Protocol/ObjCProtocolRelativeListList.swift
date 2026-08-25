@@ -74,7 +74,7 @@ extension ObjCProtocolRelativeListList64 {
             return nil
         }
 
-        guard let header: List.Header = location.cache.fileHandle.readProtocolLayout(
+        guard let header: List.Header = location.cache.fileHandle.readLayout(
             offset: location.fileOffset,
             as: List.Header.self
         ) else {
@@ -155,7 +155,7 @@ extension ObjCProtocolRelativeListList32 {
             return nil
         }
 
-        guard let header: List.Header = location.cache.fileHandle.readProtocolLayout(
+        guard let header: List.Header = location.cache.fileHandle.readLayout(
             offset: location.fileOffset,
             as: List.Header.self
         ) else {

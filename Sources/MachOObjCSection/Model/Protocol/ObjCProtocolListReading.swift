@@ -318,24 +318,6 @@ extension _FileIOProtocol {
         return .success(pointers)
     }
 
-    internal func readProtocolLayout<Layout>(
-        offset: UInt64,
-        as layoutType: Layout.Type
-    ) -> Layout? {
-        let byteCount = MemoryLayout<Layout>.size
-        guard let readOffset = Int(exactly: offset),
-              readOffset >= 0,
-              readOffset <= size,
-              byteCount <= size - readOffset else {
-            return nil
-        }
-        guard let data = try? readData(offset: readOffset, length: byteCount) else {
-            return nil
-        }
-        return data.withUnsafeBytes { bytes in
-            bytes.loadUnaligned(as: Layout.self)
-        }
-    }
 }
 
 extension ObjCProtocolListProtocol {
@@ -450,7 +432,7 @@ extension ObjCProtocolListProtocol {
                 targetMachO = resolvedMachO
             }
 
-            guard let layout: ObjCProtocol.Layout = layoutFile.readProtocolLayout(
+            guard let layout: ObjCProtocol.Layout = layoutFile.readLayout(
                 offset: layoutOffset,
                 as: ObjCProtocol.Layout.self
             ) else {
