@@ -158,6 +158,58 @@ final class ObjCRelativeMemberListSafetyTests: XCTestCase {
         XCTAssertEqual(imageResolutionCount, 0)
     }
 
+    func testRelativeListFileAndImageRejectIntMaxLogicalOffsetsWithoutTrap() throws {
+        let header = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size),
+                count: 1
+            )
+        )
+
+        let fileFixture = try SyntheticRelativeMemberFileFixture()
+        let fileList = ObjCMethodRelativeListList(offset: Int.max, header: header)
+        var fileResolverCallCount = 0
+        let fileResult = fileList.resolveMemberLists(
+            in: fileFixture.machO,
+            locationResolver: { _, _ in
+                fileResolverCallCount += 1
+                return nil
+            }
+        )
+        guard case .failure(let fileFailure) = fileResult else {
+            return XCTFail("Expected an overflowing file-list logical offset")
+        }
+        XCTAssertEqual(fileFailure.reason, .invalidRelativeListLocation)
+        XCTAssertEqual(fileResolverCallCount, 0)
+
+        let imageFixture = SyntheticRelativeMemberImageFixture(kind: .method)
+        let imageList = ObjCMethodRelativeListList(offset: Int.max, header: header)
+        var imageLoadCallCount = 0
+        let imageResult = imageList.resolveMemberLists(
+            in: imageFixture.machO,
+            imageLoadResolver: { _ in
+                imageLoadCallCount += 1
+                return .loaded
+            },
+            imageResolver: { _ in imageFixture.machO }
+        )
+        guard case .failure(let imageFailure) = imageResult else {
+            return XCTFail("Expected an overflowing image-list logical offset")
+        }
+        XCTAssertEqual(imageFailure.reason, .invalidRelativeListLocation)
+        XCTAssertEqual(imageLoadCallCount, 0)
+    }
+
+    func testInnerMemberTableOffsetOwnerRejectsIntMaxBeforeRangeRead() {
+        XCTAssertNil(checkedEntrySizeListTableOffset(Int.max))
+        XCTAssertEqual(
+            checkedEntrySizeListTableOffset(
+                Int.max - MemoryLayout<EntrySizeListHeader>.size
+            ),
+            Int.max
+        )
+    }
+
     func testInnerMemberTableRangeIsValidatedBeforeLegacyDecode() throws {
         let fixture = try SyntheticRelativeMemberFileFixture()
         let result = fixture.methodRelative.resolveMemberLists(

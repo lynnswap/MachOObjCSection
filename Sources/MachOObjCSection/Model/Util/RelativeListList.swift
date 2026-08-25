@@ -175,8 +175,7 @@ extension RelativeListListProtocol {
         layouts: [Entry.Layout],
         stride: Int
     ) -> Result<[(index: Int, entry: Entry)], ObjCRelativeListFailure> {
-        let (baseOffset, baseOverflow) = offset.addingReportingOverflow(MemoryLayout<Header>.size)
-        guard !baseOverflow else {
+        guard let baseOffset = checkedEntrySizeListTableOffset(offset) else {
             return .failure(
                 .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
             )
@@ -220,10 +219,7 @@ extension RelativeListListProtocol {
         case .success(let value): countAndStride = value
         case .failure(let failure): return .failure(failure)
         }
-        let (logicalTableOffset, logicalOverflow) = offset.addingReportingOverflow(
-            MemoryLayout<Header>.size
-        )
-        guard !logicalOverflow else {
+        guard let logicalTableOffset = checkedEntrySizeListTableOffset(offset) else {
             return .failure(
                 .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
             )
@@ -274,10 +270,7 @@ extension RelativeListListProtocol {
         }
 
         let tableEntries: [ObjCMetadataTableEntry<Entry.Layout>]
-        let (logicalTableOffset, logicalOverflow) = offset.addingReportingOverflow(
-            MemoryLayout<Header>.size
-        )
-        guard !logicalOverflow else {
+        guard let logicalTableOffset = checkedEntrySizeListTableOffset(offset) else {
             return .failure(
                 .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
             )

@@ -116,10 +116,7 @@ extension ObjCMemberRelativeListListProtocol {
                         )
                     )
                 }
-                let (logicalTableOffset, logicalOverflow) = listOffset.addingReportingOverflow(
-                    MemoryLayout<EntrySizeListHeader>.size
-                )
-                guard !logicalOverflow else {
+                guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
                     return .failure(.invalidRelativeListLocation)
                 }
                 switch ObjCMetadataTableReader.readFile(
@@ -192,10 +189,7 @@ extension ObjCMemberRelativeListListProtocol {
                 guard !overflow else {
                     return .failure(.invalidRelativeListLocation)
                 }
-                let (logicalTableOffset, logicalOverflow) = listOffset.addingReportingOverflow(
-                    MemoryLayout<EntrySizeListHeader>.size
-                )
-                guard !logicalOverflow else {
+                guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
                     return .failure(.invalidRelativeListLocation)
                 }
                 switch ObjCMetadataTableReader.readImage(

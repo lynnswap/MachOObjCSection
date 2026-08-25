@@ -120,18 +120,45 @@ final class ObjCMethodListIteratorSafetyTests: XCTestCase {
         )
         XCTAssertEqual(ObjCPropertyList.size(for: empty), MemoryLayout<EntrySizeListHeader>.size)
         XCTAssertEqual(
-            ObjCPropertyList.checkedSize(for: empty),
+            ObjCPropertyList.checkedSize(
+                for: empty,
+                expectedEntrySize: MemoryLayout<ObjCProperty.Property64>.size
+            ),
             MemoryLayout<EntrySizeListHeader>.size
         )
 
-        let excessive = EntrySizeListHeader(
+        let capPlusOneCount = ObjCMetadataReadLimits.maximumListEntries + 1
+        let capPlusOne = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<ObjCMethod.Pointer64>.size),
+                count: UInt32(capPlusOneCount)
+            )
+        )
+        XCTAssertEqual(
+            ObjCMethodList.size(for: capPlusOne),
+            MemoryLayout<EntrySizeListHeader>.size
+                + capPlusOneCount * MemoryLayout<ObjCMethod.Pointer64>.size
+        )
+        XCTAssertNil(
+            ObjCMethodList.checkedSize(
+                for: capPlusOne,
+                expectedEntrySize: MemoryLayout<ObjCMethod.Pointer64>.size
+            )
+        )
+
+        let overflowing = EntrySizeListHeader(
             layout: .init(entsizeAndFlags: UInt32.max, count: UInt32.max)
         )
-        XCTAssertEqual(ObjCPropertyList.size(for: excessive), 0)
-        XCTAssertNil(ObjCPropertyList.checkedSize(for: excessive))
+        XCTAssertEqual(ObjCPropertyList.size(for: overflowing), 0)
+        XCTAssertNil(
+            ObjCPropertyList.checkedSize(
+                for: overflowing,
+                expectedEntrySize: MemoryLayout<ObjCProperty.Property64>.size
+            )
+        )
 
-        let list = ObjCPropertyList(offset: 0, header: excessive, is64Bit: true)
-        let staticSize: Int = ObjCPropertyList.size(for: excessive)
+        let list = ObjCPropertyList(offset: 0, header: overflowing, is64Bit: true)
+        let staticSize: Int = ObjCPropertyList.size(for: overflowing)
         let instanceSize: Int = list.size
         let entrySize: Int = list.entrySize
         let count: Int = list.count
