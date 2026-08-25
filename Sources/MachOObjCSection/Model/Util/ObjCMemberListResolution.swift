@@ -33,8 +33,9 @@ extension ObjCMemberRelativeListListProtocol {
     private func checkedElementCount(
         for list: List
     ) -> Result<Int, ObjCRelativeListFailure.Reason> {
-        guard let count = Int(exactly: list.header.count) else {
-            return .failure(.invalidElementCount(UInt64(list.header.count)))
+        let rawCount = UInt64(list.header.layout.count)
+        guard let count = Int(exactly: rawCount) else {
+            return .failure(.invalidElementCount(rawCount))
         }
         return .success(count)
     }
@@ -43,8 +44,8 @@ extension ObjCMemberRelativeListListProtocol {
         of list: List
     ) -> Result<Int, ObjCRelativeListFailure.Reason> {
         let expected = expectedEntrySize(for: list)
-        let rawEntrySize = list.header.entsizeAndFlags & ~List.flagMask
-        guard let entrySize = Int(exactly: rawEntrySize) else {
+        let rawStride = UInt64(list.header.layout.entsizeAndFlags & ~List.flagMask)
+        guard let stride = Int(exactly: rawStride) else {
             return .failure(
                 .invalidListEntrySize(
                     advertised: Int.max,
@@ -52,13 +53,149 @@ extension ObjCMemberRelativeListListProtocol {
                 )
             )
         }
-        guard entrySize == expected else {
-            return .failure(.invalidListEntrySize(
-                advertised: entrySize,
-                expected: expected
-            ))
+        guard stride == expected else {
+            return .failure(
+                .invalidListEntrySize(
+                    advertised: stride,
+                    expected: expected
+                )
+            )
         }
-        return .success(entrySize)
+        return .success(stride)
+    }
+
+    private func readMemberList(
+        at location: ObjCRelativeFileLocation,
+        listOffset: Int
+    ) -> Result<List, ObjCRelativeListFailure.Reason> {
+        guard let header: EntrySizeListHeader = location.file.readLayout(
+            offset: location.fileOffset,
+            as: EntrySizeListHeader.self
+        ) else {
+            return .failure(
+                .unreadableFileHeader(
+                    offset: location.fileOffset,
+                    byteCount: MemoryLayout<EntrySizeListHeader>.size
+                )
+            )
+        }
+        let list = makeList(
+            offset: listOffset,
+            header: header,
+            is64Bit: location.image.is64Bit
+        )
+        let count: Int
+        switch checkedElementCount(for: list) {
+        case .success(let value): count = value
+        case .failure(let failure): return .failure(failure)
+        }
+        guard count > 0 else { return .success(list) }
+        let requiredAlignment = expectedEntryAlignment(for: list)
+        guard listOffset.isMultiple(of: requiredAlignment) else {
+            return .failure(
+                .misalignedListOffset(
+                    offset: listOffset,
+                    requiredAlignment: requiredAlignment
+                )
+            )
+        }
+        let stride: Int
+        switch checkedEntrySize(of: list) {
+        case .success(let value): stride = value
+        case .failure(let failure): return .failure(failure)
+        }
+        let (tableOffset, overflow) = location.fileOffset.addingReportingOverflow(
+            UInt64(MemoryLayout<EntrySizeListHeader>.size)
+        )
+        guard !overflow else {
+            return .failure(
+                .rangeOverflow(
+                    startOffset: location.fileOffset,
+                    byteCount: MemoryLayout<EntrySizeListHeader>.size
+                )
+            )
+        }
+        guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
+            return .failure(.invalidRelativeListLocation)
+        }
+        switch ObjCMetadataTableReader.readFile(
+            location.file,
+            offset: tableOffset,
+            logicalOffset: logicalTableOffset,
+            count: count,
+            stride: stride,
+            as: UInt8.self
+        ) {
+        case .success:
+            return .success(list)
+        case .failure(let failure):
+            return .failure(failure.relativeListReason)
+        }
+    }
+
+    private func readMemberList(
+        in targetMachO: MachOImage,
+        pointer: UnsafeRawPointer,
+        listOffset: Int
+    ) -> Result<List, ObjCRelativeListFailure.Reason> {
+        guard isPointerSafelyReadable(
+            pointer,
+            length: MemoryLayout<EntrySizeListHeader>.size
+        ) else {
+            return .failure(
+                .unreadableImageHeader(
+                    address: UInt(bitPattern: pointer),
+                    byteCount: MemoryLayout<EntrySizeListHeader>.size
+                )
+            )
+        }
+        let list = makeList(
+            ptr: pointer,
+            offset: listOffset,
+            is64Bit: targetMachO.is64Bit
+        )
+        let count: Int
+        switch checkedElementCount(for: list) {
+        case .success(let value): count = value
+        case .failure(let failure): return .failure(failure)
+        }
+        guard count > 0 else { return .success(list) }
+        let requiredAlignment = expectedEntryAlignment(for: list)
+        let listAddress = UInt(bitPattern: pointer)
+        guard listAddress.isMultiple(of: UInt(requiredAlignment)) else {
+            return .failure(
+                .misalignedListAddress(
+                    address: listAddress,
+                    requiredAlignment: requiredAlignment
+                )
+            )
+        }
+        let stride: Int
+        switch checkedEntrySize(of: list) {
+        case .success(let value): stride = value
+        case .failure(let failure): return .failure(failure)
+        }
+        let (tableAddress, overflow) = listAddress.addingReportingOverflow(
+            UInt(MemoryLayout<EntrySizeListHeader>.size)
+        )
+        guard !overflow else {
+            return .failure(.invalidRelativeListLocation)
+        }
+        guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
+            return .failure(.invalidRelativeListLocation)
+        }
+        switch ObjCMetadataTableReader.readImage(
+            address: tableAddress,
+            logicalOffset: logicalTableOffset,
+            count: count,
+            stride: stride,
+            as: UInt8.self
+        ) {
+        case .success:
+            return .success(list)
+        case .failure(let failure):
+            return .failure(failure.relativeListReason)
+        }
     }
 
     internal func resolveMemberLists(
@@ -69,69 +206,7 @@ extension ObjCMemberRelativeListListProtocol {
             in: machO,
             locationResolver: locationResolver,
             makeList: { location, _, listOffset in
-                guard let header: EntrySizeListHeader = location.file.readLayout(
-                    offset: location.fileOffset,
-                    as: EntrySizeListHeader.self
-                ) else {
-                    return .failure(
-                        .unreadableFileHeader(
-                            offset: location.fileOffset,
-                            byteCount: MemoryLayout<EntrySizeListHeader>.size
-                        )
-                    )
-                }
-                let list = makeList(
-                    offset: listOffset,
-                    header: header,
-                    is64Bit: location.image.is64Bit
-                )
-                let count: Int
-                switch checkedElementCount(for: list) {
-                case .success(let value): count = value
-                case .failure(let failure): return .failure(failure)
-                }
-                guard count > 0 else { return .success(list) }
-                let requiredAlignment = expectedEntryAlignment(for: list)
-                guard listOffset.isMultiple(of: requiredAlignment) else {
-                    return .failure(
-                        .misalignedListOffset(
-                            offset: listOffset,
-                            requiredAlignment: requiredAlignment
-                        )
-                    )
-                }
-                let entrySize: Int
-                switch checkedEntrySize(of: list) {
-                case .success(let value): entrySize = value
-                case .failure(let failure): return .failure(failure)
-                }
-                let (tableOffset, overflow) = location.fileOffset.addingReportingOverflow(
-                    UInt64(MemoryLayout<EntrySizeListHeader>.size)
-                )
-                guard !overflow else {
-                    return .failure(
-                        .rangeOverflow(
-                            startOffset: location.fileOffset,
-                            byteCount: MemoryLayout<EntrySizeListHeader>.size
-                        )
-                    )
-                }
-                guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
-                    return .failure(.invalidRelativeListLocation)
-                }
-                switch ObjCMetadataTableReader.readFile(
-                    location.file,
-                    offset: tableOffset,
-                    logicalOffset: logicalTableOffset,
-                    count: count,
-                    stride: entrySize,
-                    as: UInt8.self
-                ) {
-                case .success:
-                    return .success(list)
-                case .failure(let failure):
-                    return .failure(failure.relativeListReason)
-                }
+                readMemberList(at: location, listOffset: listOffset)
             }
         )
     }
@@ -146,64 +221,47 @@ extension ObjCMemberRelativeListListProtocol {
             imageLoadResolver: imageLoadResolver,
             imageResolver: imageResolver,
             makeList: { targetMachO, pointer, listOffset, _ in
-                guard isPointerSafelyReadable(
-                    pointer,
-                    length: MemoryLayout<EntrySizeListHeader>.size
-                ) else {
-                    return .failure(
-                        .unreadableImageHeader(
-                            address: UInt(bitPattern: pointer),
-                            byteCount: MemoryLayout<EntrySizeListHeader>.size
-                        )
-                    )
-                }
-                let list = makeList(
-                    ptr: pointer,
-                    offset: listOffset,
-                    is64Bit: targetMachO.is64Bit
+                readMemberList(
+                    in: targetMachO,
+                    pointer: pointer,
+                    listOffset: listOffset
                 )
-                let count: Int
-                switch checkedElementCount(for: list) {
-                case .success(let value): count = value
-                case .failure(let failure): return .failure(failure)
-                }
-                guard count > 0 else { return .success(list) }
-                let requiredAlignment = expectedEntryAlignment(for: list)
-                let listAddress = UInt(bitPattern: pointer)
-                guard listAddress.isMultiple(of: UInt(requiredAlignment)) else {
-                    return .failure(
-                        .misalignedListAddress(
-                            address: listAddress,
-                            requiredAlignment: requiredAlignment
-                        )
-                    )
-                }
-                let entrySize: Int
-                switch checkedEntrySize(of: list) {
-                case .success(let value): entrySize = value
-                case .failure(let failure): return .failure(failure)
-                }
-                let (tableAddress, overflow) = UInt(bitPattern: pointer).addingReportingOverflow(
-                    UInt(MemoryLayout<EntrySizeListHeader>.size)
+            }
+        )
+    }
+
+    internal func resolveMemberList(
+        in machO: MachOFile,
+        for entry: Entry,
+        locationResolver: (MachOFile, Entry) -> ObjCRelativeFileLocation? = defaultRelativeFileLocation
+    ) -> ObjCRelativeListEntryResolution<MachOFile, List> {
+        resolveRelativeList(
+            in: machO,
+            for: entry,
+            locationResolver: locationResolver,
+            makeList: { location, _, listOffset in
+                readMemberList(at: location, listOffset: listOffset)
+            }
+        )
+    }
+
+    internal func resolveMemberList(
+        in machO: MachOImage,
+        for entry: Entry,
+        imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
+        imageResolver: (Int) -> MachOImage? = defaultRelativeImage
+    ) -> ObjCRelativeListEntryResolution<MachOImage, List> {
+        resolveRelativeList(
+            in: machO,
+            for: entry,
+            imageLoadResolver: imageLoadResolver,
+            imageResolver: imageResolver,
+            makeList: { targetMachO, pointer, listOffset, _ in
+                readMemberList(
+                    in: targetMachO,
+                    pointer: pointer,
+                    listOffset: listOffset
                 )
-                guard !overflow else {
-                    return .failure(.invalidRelativeListLocation)
-                }
-                guard let logicalTableOffset = checkedEntrySizeListTableOffset(listOffset) else {
-                    return .failure(.invalidRelativeListLocation)
-                }
-                switch ObjCMetadataTableReader.readImage(
-                    address: tableAddress,
-                    logicalOffset: logicalTableOffset,
-                    count: count,
-                    stride: entrySize,
-                    as: UInt8.self
-                ) {
-                case .success:
-                    return .success(list)
-                case .failure(let failure):
-                    return .failure(failure.relativeListReason)
-                }
             }
         )
     }

@@ -235,72 +235,15 @@ extension ObjCClassRODataProtocol {
     }
 
     public func methodList(in machO: MachOImage) -> ObjCMethodList? {
-        guard layout.baseMethods > 0 else { return nil }
-        guard layout.baseMethods & 1 == 0 else { return nil }
-
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.baseMethods))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress)
-        ) else {
-            return nil
-        }
-
-        let list = ObjCMethodList(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
-
-        if list.isValidEntrySize(is64Bit: machO.is64Bit) == false {
-            // FIXME: Check
-            return nil
-        }
-
-        return list
+        readLoadedMethodList(in: machO).value
     }
 
     public func propertyList(in machO: MachOImage) -> ObjCPropertyList? {
-        guard layout.baseProperties > 0 else { return nil }
-        guard layout.baseProperties & 1 == 0 else { return nil }
-
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.baseProperties))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress)
-        ) else {
-            return nil
-        }
-        let list = ObjCPropertyList(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
-
-        if list.isValidEntrySize(is64Bit: machO.is64Bit) == false {
-            // FIXME: Check
-            return nil
-        }
-
-        return list
+        readLoadedPropertyList(in: machO).value
     }
 
     public func ivarList(in machO: MachOImage) -> ObjCIvarList? {
-        guard layout.ivars > 0 else { return nil }
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ivars))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedAddress)) else {
-            return nil
-        }
-        let list = ObjCIvarList(
-            header: ptr
-                .assumingMemoryBound(to: ObjCIvarList.Header.self)
-                .pointee,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
-        if list.isValidEntrySize(is64Bit: machO.is64Bit) == false {
-            // FIXME: Check
-            return nil
-        }
-
-        return list
+        readLoadedIvarList(in: machO).value
     }
 
     public func protocolList(in machO: MachOImage) -> ObjCProtocolList? {
@@ -322,6 +265,72 @@ extension ObjCClassRODataProtocol {
         )
 
         return list
+    }
+}
+
+extension ObjCClassRODataProtocol {
+    internal func readLoadedMethodList(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+        guard layout.baseMethods & 1 == 0 else { return .absent }
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: layout.baseMethods,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCMethodList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
+        )
+    }
+
+    internal func readLoadedPropertyList(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+        guard layout.baseProperties & 1 == 0 else { return .absent }
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: layout.baseProperties,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCPropertyList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
+        )
+    }
+
+    internal func readLoadedIvarList(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCIvarList> {
+        ObjCLoadedImageReader.readEntrySizeList(
+            from: layout.ivars,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: MemoryLayout<ObjCIvarList.ObjCIvar.Layout>.size
+                )
+            },
+            makeList: { header, offset in
+                ObjCIvarList(header: header, offset: offset)
+            }
+        )
     }
 }
 
@@ -412,39 +421,13 @@ extension ObjCClassRODataProtocol {
     public func methodRelativeListList(
         in machO: MachOImage
     ) -> ObjCMethodRelativeListList? {
-        guard layout.baseMethods > 0 else { return nil }
-        guard layout.baseMethods & 1 == 1 else { return nil }
-
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.baseMethods))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress) & ~1
-        ) else {
-            return nil
-        }
-
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
+        readLoadedMethodRelativeListList(in: machO).value
     }
 
     public func propertyRelativeListList(
         in machO: MachOImage
     ) -> ObjCPropertyRelativeListList? {
-        guard layout.baseProperties > 0 else { return nil }
-        guard layout.baseProperties & 1 == 1 else { return nil }
-
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.baseProperties))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress) & ~1
-        ) else {
-            return nil
-        }
-
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
+        readLoadedPropertyRelativeListList(in: machO).value
     }
 
     public func protocolRelativeListList(
@@ -470,6 +453,56 @@ extension ObjCClassRODataProtocol {
             ptr: ptr,
             offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
         )
+    }
+}
+
+extension ObjCClassRODataProtocol {
+    internal func readLoadedMethodRelativeListList(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCMethodRelativeListList> {
+        guard layout.baseMethods & 1 == 1 else { return .absent }
+        let pointer = layout.baseMethods & ~1
+        switch ObjCLoadedImageReader.readLayout(
+            from: pointer,
+            in: machO,
+            as: ObjCMethodRelativeListList.Header.self
+        ) {
+        case .absent:
+            return .absent
+        case let .failure(provenance, reason):
+            return .failure(provenance: provenance, reason: reason)
+        case .value(let read):
+            return .value(
+                ObjCMethodRelativeListList(
+                    offset: read.offset,
+                    header: read.layout
+                )
+            )
+        }
+    }
+
+    internal func readLoadedPropertyRelativeListList(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCPropertyRelativeListList> {
+        guard layout.baseProperties & 1 == 1 else { return .absent }
+        let pointer = layout.baseProperties & ~1
+        switch ObjCLoadedImageReader.readLayout(
+            from: pointer,
+            in: machO,
+            as: ObjCPropertyRelativeListList.Header.self
+        ) {
+        case .absent:
+            return .absent
+        case let .failure(provenance, reason):
+            return .failure(provenance: provenance, reason: reason)
+        case .value(let read):
+            return .value(
+                ObjCPropertyRelativeListList(
+                    offset: read.offset,
+                    header: read.layout
+                )
+            )
+        }
     }
 }
 

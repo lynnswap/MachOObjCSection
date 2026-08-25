@@ -47,6 +47,12 @@ internal struct ObjCRelativeFileLocation {
     let fileOffset: UInt64
 }
 
+internal enum ObjCRelativeListEntryResolution<Source, List> {
+    case omitted
+    case resolved(Source, List)
+    case failure(diagnosticOffset: Int?, reason: ObjCRelativeListFailure.Reason)
+}
+
 extension ObjCRelativeFileLocation {
     static func direct(
         in machO: MachOFile,
@@ -297,6 +303,85 @@ extension RelativeListListProtocol {
         )
     }
 
+    internal func resolveRelativeList(
+        in machO: MachOFile,
+        for entry: Entry,
+        locationResolver: (MachOFile, Entry) -> ObjCRelativeFileLocation? = defaultRelativeFileLocation,
+        makeList: (
+            ObjCRelativeFileLocation,
+            Entry,
+            Int
+        ) -> Result<List, ObjCRelativeListFailure.Reason>
+    ) -> ObjCRelativeListEntryResolution<MachOFile, List> {
+        guard let location = locationResolver(machO, entry) else {
+            return .failure(diagnosticOffset: nil, reason: .invalidRelativeListLocation)
+        }
+        guard let relativeOffset = addingSignedDisplacement(
+            entry.signedListOffset,
+            to: entry.offset
+        ), let canonicalOffset = Int(exactly: relativeOffset) else {
+            return .failure(diagnosticOffset: nil, reason: .invalidRelativeListLocation)
+        }
+        switch makeList(location, entry, canonicalOffset) {
+        case .success(let list):
+            return .resolved(location.image, list)
+        case .failure(let reason):
+            return .failure(diagnosticOffset: canonicalOffset, reason: reason)
+        }
+    }
+
+    internal func resolveRelativeList(
+        in machO: MachOImage,
+        for entry: Entry,
+        imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
+        imageResolver: (Int) -> MachOImage? = defaultRelativeImage,
+        makeList: (
+            MachOImage,
+            UnsafeRawPointer,
+            Int,
+            Entry
+        ) -> Result<List, ObjCRelativeListFailure.Reason>
+    ) -> ObjCRelativeListEntryResolution<MachOImage, List> {
+        switch imageLoadResolver(entry.imageIndex) {
+        case .unavailable:
+            return .failure(
+                diagnosticOffset: nil,
+                reason: .relativeImageUnavailable(imageIndex: entry.imageIndex)
+            )
+        case .unloaded:
+            return .omitted
+        case .loaded:
+            break
+        }
+
+        guard let relativeOffset = addingSignedDisplacement(
+            entry.signedListOffset,
+            to: entry.offset
+        ), let address = addingSignedDisplacement(
+            relativeOffset,
+            to: UInt(bitPattern: machO.ptr)
+        ), let pointer = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(diagnosticOffset: nil, reason: .invalidRelativeListLocation)
+        }
+        let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
+        guard let targetMachO = imageResolver(entry.imageIndex),
+              let targetOffset = signedDisplacement(
+                from: UInt(bitPattern: targetMachO.ptr),
+                to: address
+              ) else {
+            return .failure(
+                diagnosticOffset: diagnosticOffset,
+                reason: .relativeImageUnavailable(imageIndex: entry.imageIndex)
+            )
+        }
+        switch makeList(targetMachO, pointer, targetOffset, entry) {
+        case .success(let list):
+            return .resolved(targetMachO, list)
+        case .failure(let reason):
+            return .failure(diagnosticOffset: diagnosticOffset, reason: reason)
+        }
+    }
+
     internal func resolveRelativeLists(
         in machO: MachOFile,
         locationResolver: (MachOFile, Entry) -> ObjCRelativeFileLocation? = defaultRelativeFileLocation,
@@ -318,46 +403,24 @@ extension RelativeListListProtocol {
         resolutions.reserveCapacity(entries.count)
         for indexedEntry in entries {
             let entry = indexedEntry.entry
-            guard let location = locationResolver(machO, entry) else {
-                resolutions.append(
-                    .failure(
-                        .entry(
-                            outerListOffset: offset,
-                            index: indexedEntry.index,
-                            entry: entry,
-                            reason: .invalidRelativeListLocation
-                        )
-                    )
-                )
+            switch resolveRelativeList(
+                in: machO,
+                for: entry,
+                locationResolver: locationResolver,
+                makeList: makeList
+            ) {
+            case .omitted:
                 continue
-            }
-            guard let relativeOffset = addingSignedDisplacement(
-                entry.signedListOffset,
-                to: entry.offset
-            ), let canonicalOffset = Int(exactly: relativeOffset) else {
+            case let .resolved(source, list):
+                resolutions.append(.resolved(source, list))
+            case let .failure(diagnosticOffset, reason):
                 resolutions.append(
                     .failure(
                         .entry(
                             outerListOffset: offset,
                             index: indexedEntry.index,
                             entry: entry,
-                            reason: .invalidRelativeListLocation
-                        )
-                    )
-                )
-                continue
-            }
-            switch makeList(location, entry, canonicalOffset) {
-            case .success(let list):
-                resolutions.append(.resolved(location.image, list))
-            case .failure(let reason):
-                resolutions.append(
-                    .failure(
-                        .entry(
-                            outerListOffset: offset,
-                            index: indexedEntry.index,
-                            entry: entry,
-                            diagnosticOffset: canonicalOffset,
+                            diagnosticOffset: diagnosticOffset,
                             reason: reason
                         )
                     )
@@ -390,67 +453,18 @@ extension RelativeListListProtocol {
         resolutions.reserveCapacity(entries.count)
         for indexedEntry in entries {
             let entry = indexedEntry.entry
-            switch imageLoadResolver(entry.imageIndex) {
-            case .unavailable:
-                resolutions.append(
-                    .failure(
-                        .entry(
-                            outerListOffset: offset,
-                            index: indexedEntry.index,
-                            entry: entry,
-                            reason: .relativeImageUnavailable(imageIndex: entry.imageIndex)
-                        )
-                    )
-                )
+            switch resolveRelativeList(
+                in: machO,
+                for: entry,
+                imageLoadResolver: imageLoadResolver,
+                imageResolver: imageResolver,
+                makeList: makeList
+            ) {
+            case .omitted:
                 continue
-            case .unloaded:
-                continue
-            case .loaded:
-                break
-            }
-
-            guard let relativeOffset = addingSignedDisplacement(
-                entry.signedListOffset,
-                to: entry.offset
-            ), let address = addingSignedDisplacement(
-                relativeOffset,
-                to: UInt(bitPattern: machO.ptr)
-            ), let pointer = UnsafeRawPointer(bitPattern: address) else {
-                resolutions.append(
-                    .failure(
-                        .entry(
-                            outerListOffset: offset,
-                            index: indexedEntry.index,
-                            entry: entry,
-                            reason: .invalidRelativeListLocation
-                        )
-                    )
-                )
-                continue
-            }
-            let diagnosticOffset = Int(exactly: relativeOffset) ?? entry.offset
-            guard let targetMachO = imageResolver(entry.imageIndex),
-                  let targetOffset = signedDisplacement(
-                    from: UInt(bitPattern: targetMachO.ptr),
-                    to: address
-                  ) else {
-                resolutions.append(
-                    .failure(
-                        .entry(
-                            outerListOffset: offset,
-                            index: indexedEntry.index,
-                            entry: entry,
-                            diagnosticOffset: diagnosticOffset,
-                            reason: .relativeImageUnavailable(imageIndex: entry.imageIndex)
-                        )
-                    )
-                )
-                continue
-            }
-            switch makeList(targetMachO, pointer, targetOffset, entry) {
-            case .success(let list):
-                resolutions.append(.resolved(targetMachO, list))
-            case .failure(let reason):
+            case let .resolved(source, list):
+                resolutions.append(.resolved(source, list))
+            case let .failure(diagnosticOffset, reason):
                 resolutions.append(
                     .failure(
                         .entry(

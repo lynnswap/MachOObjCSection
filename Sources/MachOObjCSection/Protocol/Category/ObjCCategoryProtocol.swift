@@ -160,53 +160,11 @@ extension ObjCCategoryProtocol {
     }
 
     public func `class`(in machO: MachOImage) -> (MachOImage, ObjCClass)? {
-        guard layout.cls > 0 else { return nil }
-        let strippedCls = machO.stripPointerTags(of: numericCast(layout.cls))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedCls)) else {
-            return nil
-        }
-
-        var targetMachO = machO
-        if !targetMachO.contains(ptr: ptr) {
-            guard let _targetMachO = machO.resolveImage(containing: ptr) else {
-                return nil
-            }
-            targetMachO = _targetMachO
-        }
-
-        let offset: Int = Int(bitPattern: ptr) - Int(bitPattern: targetMachO.ptr)
-
-        let layout = ptr.assumingMemoryBound(to: ObjCClass.Layout.self).pointee
-        let cls: ObjCClass = .init(layout: layout, offset: offset)
-
-        if cls.isStubClass { return nil }
-
-        return (targetMachO, cls)
+        readLoadedClass(in: machO).value
     }
 
     public func stubClass(in machO: MachOImage) -> (MachOImage, ObjCStubClass)? {
-        guard layout.cls > 0 else { return nil }
-        let strippedCls = machO.stripPointerTags(of: numericCast(layout.cls))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedCls)) else {
-            return nil
-        }
-
-        var targetMachO = machO
-        if !targetMachO.contains(ptr: ptr) {
-            guard let _targetMachO = machO.resolveImage(containing: ptr) else {
-                return nil
-            }
-            targetMachO = _targetMachO
-        }
-
-        let offset: Int = Int(bitPattern: ptr) - Int(bitPattern: targetMachO.ptr)
-
-        let layout = ptr.assumingMemoryBound(to: ObjCStubClass.Layout.self).pointee
-        let cls: ObjCStubClass = .init(layout: layout, offset: offset)
-
-        guard cls.isStubClass else { return nil }
-
-        return (targetMachO, cls)
+        readLoadedStubClass(in: machO).value
     }
 
     public func className(in machO: MachOImage) -> String? {
@@ -242,31 +200,19 @@ extension ObjCCategoryProtocol {
     }
 
     public func instanceMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        _readMethodList(
-            at: numericCast(layout.instanceMethods),
-            in: machO
-        )
+        readLoadedMethodList(at: layout.instanceMethods, in: machO).value
     }
 
     public func classMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        _readMethodList(
-            at: numericCast(layout.classMethods),
-            in: machO
-        )
+        readLoadedMethodList(at: layout.classMethods, in: machO).value
     }
 
     public func instancePropertyList(in machO: MachOImage) -> ObjCPropertyList? {
-        _readPropertyList(
-            at: numericCast(layout.instanceProperties),
-            in: machO
-        )
+        readLoadedPropertyList(at: layout.instanceProperties, in: machO).value
     }
 
     public func classPropertyList(in machO: MachOImage) -> ObjCPropertyList? {
-        _readPropertyList(
-            at: numericCast(layout._classProperties),
-            in: machO
-        )
+        readLoadedPropertyList(at: layout._classProperties, in: machO).value
     }
 
     public func protocolList(in machO: MachOImage) -> ObjCProtocolList? {
@@ -274,6 +220,46 @@ extension ObjCCategoryProtocol {
             at: numericCast(layout.protocols),
             in: machO
         )
+    }
+}
+
+extension ObjCCategoryProtocol {
+    internal func readLoadedClass(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<(MachOImage, ObjCClass)> {
+        switch ObjCLoadedImageReader.readRelatedLayout(
+            from: layout.cls,
+            in: machO,
+            as: ObjCClass.Layout.self
+        ) {
+        case .absent:
+            return .absent
+        case let .failure(provenance, reason):
+            return .failure(provenance: provenance, reason: reason)
+        case .value(let read):
+            let cls = ObjCClass(layout: read.layout, offset: read.offset)
+            guard !cls.isStubClass else { return .absent }
+            return .value((read.image, cls))
+        }
+    }
+
+    internal func readLoadedStubClass(
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<(MachOImage, ObjCStubClass)> {
+        switch ObjCLoadedImageReader.readRelatedLayout(
+            from: layout.cls,
+            in: machO,
+            as: ObjCStubClass.Layout.self
+        ) {
+        case .absent:
+            return .absent
+        case let .failure(provenance, reason):
+            return .failure(provenance: provenance, reason: reason)
+        case .value(let read):
+            let cls = ObjCStubClass(layout: read.layout, offset: read.offset)
+            guard cls.isStubClass else { return .absent }
+            return .value((read.image, cls))
+        }
     }
 }
 
@@ -505,59 +491,52 @@ extension ObjCCategoryProtocol {
 }
 
 extension ObjCCategoryProtocol {
-    private func _readMethodList(
-        at offset: UInt64,
+    internal func readLoadedMethodList(
+        at pointer: Layout.Pointer,
         in machO: MachOImage
-    ) -> ObjCMethodList? {
-        guard offset > 0 else { return nil }
-        guard offset & 1 == 0 else { return nil }
-
-        let strippedAddress = UInt(machO.stripPointerTags(of: offset))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-
-        let list = ObjCMethodList(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
+    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+        guard pointer & 1 == 0 else { return .absent }
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: pointer,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCMethodList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
         )
-
-        if list.isValidEntrySize(is64Bit: machO.is64Bit) == false {
-            // FIXME: Check
-            return nil
-        }
-
-        return list
     }
 
-    private func _readPropertyList(
-        at offset: UInt64,
+    internal func readLoadedPropertyList(
+        at pointer: Layout.Pointer,
         in machO: MachOImage
-    ) -> ObjCPropertyList? {
-        guard offset > 0 else { return nil }
-        guard offset & 1 == 0 else { return nil }
-
-        let strippedAddress = UInt(machO.stripPointerTags(of: offset))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        let list = ObjCPropertyList(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
+    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+        guard pointer & 1 == 0 else { return .absent }
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: pointer,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCPropertyList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
         )
-
-        if list.isValidEntrySize(is64Bit: machO.is64Bit) == false {
-            // FIXME: Check
-            return nil
-        }
-
-        return list
     }
 
     private func _readProtocolList(

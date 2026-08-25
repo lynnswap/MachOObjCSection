@@ -78,73 +78,23 @@ extension ObjCProtocolProtocol {
     }
 
     public func instanceMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout.instanceMethods)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
+        readLoadedMethodList(field: .instanceMethods, in: machO).value
     }
 
     public func classMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout.classMethods)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
+        readLoadedMethodList(field: .classMethods, in: machO).value
     }
 
     public func optionalInstanceMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout.optionalInstanceMethods)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
+        readLoadedMethodList(field: .optionalInstanceMethods, in: machO).value
     }
 
     public func optionalClassMethodList(in machO: MachOImage) -> ObjCMethodList? {
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout.optionalClassMethods)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
+        readLoadedMethodList(field: .optionalClassMethods, in: machO).value
     }
 
     public func instancePropertyList(in machO: MachOImage) -> ObjCPropertyList? {
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout.instanceProperties)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
-        }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
+        readLoadedPropertyList(field: .instanceProperties, in: machO).value
     }
 
     public func extendedMethodTypes(in machO: MachOImage) -> String? {
@@ -187,16 +137,62 @@ extension ObjCProtocolProtocol {
         guard size >= offset + MemoryLayout<Layout.Pointer>.size else {
             return nil
         }
-        let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(layout._classProperties)))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: strippedAddress
-        ) else {
-            return nil
+        return readLoadedPropertyList(field: ._classProperties, in: machO).value
+    }
+}
+
+extension ObjCProtocolProtocol {
+    internal func readLoadedMethodList(
+        field: LayoutField,
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+        let pointer = layout[keyPath: keyPath(of: field)]
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: pointer,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCMethodList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
+        )
+    }
+
+    internal func readLoadedPropertyList(
+        field: LayoutField,
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+        if case ._classProperties = field {
+            let fieldOffset = machO.is64Bit ? 88 : 48
+            guard size >= fieldOffset + MemoryLayout<Layout.Pointer>.size else {
+                return .absent
+            }
         }
-        return .init(
-            ptr: ptr,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
+        let pointer = layout[keyPath: keyPath(of: field)]
+        return ObjCLoadedImageReader.readEntrySizeList(
+            from: pointer,
+            in: machO,
+            validateList: { list in
+                ObjCLoadedImageReader.entrySizeFailure(
+                    for: list,
+                    expected: list.expectedEntrySize(is64Bit: machO.is64Bit)
+                )
+            },
+            makeList: { header, offset in
+                ObjCPropertyList(
+                    offset: offset,
+                    header: header,
+                    is64Bit: machO.is64Bit
+                )
+            }
         )
     }
 }

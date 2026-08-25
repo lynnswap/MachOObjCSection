@@ -196,49 +196,11 @@ extension ObjCClassProtocol {
 
 extension ObjCClassProtocol {
     public func metaClass(in machO: MachOImage) -> (MachOImage, Self)? {
-        guard layout.isa > 0 else { return nil }
-        let strippedISA = machO.stripPointerTags(of: numericCast(layout.isa))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedISA)) else {
-            return nil
-        }
-
-        var targetMachO = machO
-        if !targetMachO.contains(ptr: ptr) {
-            guard let _targetMachO = machO.resolveImage(containing: ptr) else {
-                return nil
-            }
-            targetMachO = _targetMachO
-        }
-
-        let offset: Int = Int(bitPattern: ptr) - Int(bitPattern: targetMachO.ptr)
-
-        let layout = ptr.assumingMemoryBound(to: Layout.self).pointee
-        let cls: Self = .init(layout: layout, offset: offset)
-
-        return (targetMachO, cls)
+        readLoadedRelatedClass(field: .isa, in: machO).value
     }
 
     public func superClass(in machO: MachOImage) -> (MachOImage, Self)? {
-        guard layout.superclass > 0 else { return nil }
-        let strippedSuperclass = machO.stripPointerTags(of: numericCast(layout.superclass))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedSuperclass)) else {
-            return nil
-        }
-
-        var targetMachO = machO
-        if !targetMachO.contains(ptr: ptr) {
-            guard let _targetMachO = machO.resolveImage(containing: ptr) else {
-                return nil
-            }
-            targetMachO = _targetMachO
-        }
-
-        let offset: Int = Int(bitPattern: ptr) - Int(bitPattern: targetMachO.ptr)
-
-        let layout = ptr.assumingMemoryBound(to: Layout.self).pointee
-        let cls: Self = .init(layout: layout, offset: offset)
-
-        return (targetMachO, cls)
+        readLoadedRelatedClass(field: .superclass, in: machO).value
     }
 
     public func superClassName(in machO: MachOImage) -> String? {
@@ -260,6 +222,30 @@ extension ObjCClassProtocol {
             }
         }
         return data?.name(in: machO)
+    }
+}
+
+extension ObjCClassProtocol {
+    internal func readLoadedRelatedClass(
+        field: LayoutField,
+        in machO: MachOImage
+    ) -> ObjCLoadedImageRead<(MachOImage, Self)> {
+        let rawPointer = layout[keyPath: keyPath(of: field)]
+        switch ObjCLoadedImageReader.readRelatedLayout(
+            from: rawPointer,
+            in: machO,
+            as: Layout.self
+        ) {
+        case .absent:
+            return .absent
+        case let .failure(provenance, reason):
+            return .failure(provenance: provenance, reason: reason)
+        case .value(let read):
+            return .value((
+                read.image,
+                Self(layout: read.layout, offset: read.offset)
+            ))
+        }
     }
 }
 

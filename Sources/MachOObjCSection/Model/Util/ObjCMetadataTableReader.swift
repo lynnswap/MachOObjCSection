@@ -57,6 +57,30 @@ internal struct ObjCMetadataTableEntry<Element> {
 }
 
 internal enum ObjCMetadataTableReader {
+    static func readImageLayout<Layout>(
+        address: UInt,
+        as layoutType: Layout.Type
+    ) -> ObjCMetadataTableRead<Layout> {
+        switch readImage(
+            address: address,
+            count: 1,
+            as: layoutType
+        ) {
+        case .success(let entries):
+            guard let layout = entries.first?.value else {
+                return .failure(
+                    .unreadableImageRange(
+                        address: address,
+                        byteCount: MemoryLayout<Layout>.size
+                    )
+                )
+            }
+            return .success(layout)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
     static func exactCount(
         _ rawCount: UInt64,
         maximumIntValue: UInt64 = UInt64(Int.max)
