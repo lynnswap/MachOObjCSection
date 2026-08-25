@@ -17,42 +17,6 @@ internal enum ObjCProtocolIdentity: Hashable {
     case image(address: UInt)
 }
 
-internal enum ObjCProtocolReadLimits {
-    /// A protocol table may contain at most this many entries regardless of backing.
-    static let maximumListEntries = 65_536
-
-    /// The complete strided table is capped at 512 KiB before file reads, page
-    /// probes, or allocation. This prevents a large advertised stride from
-    /// bypassing the entry-count budget.
-    static let maximumTableByteCount = 512 * 1_024
-
-    /// Runtime-only names referenced by one protocol table share a separate
-    /// scan budget so many individually bounded malformed strings cannot
-    /// multiply into unbounded work.
-    static let maximumRuntimeNameTableByteCount = 16 * 1_024 * 1_024
-
-    static func checkedTableByteCount(
-        count: Int,
-        stride: Int
-    ) -> Result<Int, ObjCProtocolListTableFailure> {
-        let (byteCount, overflow) = count.multipliedReportingOverflow(by: stride)
-        guard !overflow else {
-            return .failure(.byteCountOverflow(elementCount: count, elementSize: stride))
-        }
-        guard count <= maximumListEntries else {
-            return .failure(
-                .excessiveElementCount(actual: count, maximum: maximumListEntries)
-            )
-        }
-        guard byteCount <= maximumTableByteCount else {
-            return .failure(
-                .excessiveByteCount(actual: byteCount, maximum: maximumTableByteCount)
-            )
-        }
-        return .success(byteCount)
-    }
-}
-
 internal struct ObjCProtocolRuntimeNameReader {
     private enum CachedName {
         case value(String)
@@ -64,7 +28,7 @@ internal struct ObjCProtocolRuntimeNameReader {
     private let read: (UnsafeRawPointer, Int) -> String?
 
     init(
-        maximumTableByteCount: Int = ObjCProtocolReadLimits.maximumRuntimeNameTableByteCount,
+        maximumTableByteCount: Int = ObjCMetadataReadLimits.maximumRuntimeNameTableByteCount,
         read: @escaping (UnsafeRawPointer, Int) -> String? = {
             readBoundedNullTerminatedUTF8(at: $0, maximumByteCount: $1)
         }
@@ -154,19 +118,6 @@ internal struct ObjCProtocolNameReference {
     let identity: ObjCProtocolIdentity
 }
 
-internal enum ObjCProtocolListTableFailure: Error, Equatable {
-    case unsupportedListEncoding
-    case invalidListOffset(Int)
-    case invalidElementCount(UInt64)
-    case invalidSignedElementCount(Int)
-    case excessiveElementCount(actual: Int, maximum: Int)
-    case excessiveByteCount(actual: Int, maximum: Int)
-    case byteCountOverflow(elementCount: Int, elementSize: Int)
-    case rangeOverflow(startOffset: UInt64, byteCount: Int)
-    case unreadableFileRange(offset: UInt64, byteCount: Int)
-    case unreadableImageRange(address: UInt, byteCount: Int)
-}
-
 internal enum ObjCProtocolListEntryFailureReason: Equatable {
     case unresolvedRebase
     case invalidEntryOffset
@@ -215,7 +166,7 @@ internal struct ObjCProtocolListReadSuccess<Source, Protocol> {
 
 internal enum ObjCProtocolListReadOutcome<Source, Protocol> {
     case success(ObjCProtocolListReadSuccess<Source, Protocol>)
-    case failure(ObjCProtocolListTableFailure)
+    case failure(ObjCMetadataTableFailure)
 
     var values: [(Source, Protocol)]? {
         switch self {
@@ -227,7 +178,7 @@ internal enum ObjCProtocolListReadOutcome<Source, Protocol> {
     }
 }
 
-extension ObjCProtocolListTableFailure {
+extension ObjCMetadataTableFailure {
     var diagnosticFailure: ObjCProtocolDiagnostic.UnreadableList.Failure {
         switch self {
         case .unsupportedListEncoding:
@@ -238,6 +189,16 @@ extension ObjCProtocolListTableFailure {
             .invalidElementCount(count)
         case .invalidSignedElementCount(let count):
             .invalidSignedElementCount(count)
+        case .invalidElementStride(let stride):
+            .byteCountOverflow(elementCount: 1, elementSize: Int(clamping: stride))
+        case let .elementStrideTooSmall(advertised, _):
+            .byteCountOverflow(elementCount: 1, elementSize: advertised)
+        case let .unexpectedElementStride(advertised, _):
+            .byteCountOverflow(elementCount: 1, elementSize: advertised)
+        case let .misalignedTableOffset(offset, _):
+            .invalidListOffset(offset)
+        case .misalignedTableAddress:
+            .invalidListOffset(0)
         case let .excessiveElementCount(actual, maximum):
             .excessiveElementCount(actual: actual, maximum: maximum)
         case let .excessiveByteCount(actual, maximum):
@@ -275,53 +236,8 @@ extension ObjCProtocolListEntryFailure {
     }
 }
 
-internal enum CheckedProtocolRead<Value> {
-    case success(Value)
-    case failure(ObjCProtocolListTableFailure)
-}
-
-extension _FileIOProtocol {
-    internal func readProtocolTable<Element>(
-        offset: UInt64,
-        count: Int,
-        stride: Int? = nil,
-        as elementType: Element.Type
-    ) -> CheckedProtocolRead<[Element]> {
-        let elementSize = MemoryLayout<Element>.size
-        let stride = stride ?? elementSize
-        guard stride >= elementSize else {
-            return .failure(.byteCountOverflow(elementCount: count, elementSize: stride))
-        }
-        let byteCount: Int
-        switch ObjCProtocolReadLimits.checkedTableByteCount(count: count, stride: stride) {
-        case .success(let value): byteCount = value
-        case .failure(let failure): return .failure(failure)
-        }
-
-        guard let readOffset = Int(exactly: offset),
-              readOffset >= 0,
-              byteCount >= 0,
-              readOffset <= size,
-              byteCount <= size - readOffset else {
-            return .failure(.unreadableFileRange(offset: offset, byteCount: byteCount))
-        }
-
-        guard let data = try? readData(offset: readOffset, length: byteCount) else {
-            return .failure(.unreadableFileRange(offset: offset, byteCount: byteCount))
-        }
-
-        let pointers = data.withUnsafeBytes { bytes in
-            (0..<count).map { index in
-                bytes.loadUnaligned(fromByteOffset: index * stride, as: Element.self)
-            }
-        }
-        return .success(pointers)
-    }
-
-}
-
 extension ObjCProtocolListProtocol {
-    private func checkedElementCount() -> Result<Int, ObjCProtocolListTableFailure> {
+    private func checkedElementCount() -> ObjCMetadataTableRead<Int> {
         if let header = header as? ObjCProtocolListHeader64 {
             guard let count = Int(exactly: header._count) else {
                 return .failure(.invalidElementCount(header._count))
@@ -342,9 +258,9 @@ extension ObjCProtocolListProtocol {
         return .success(count)
     }
 
-    private func checkedByteCount(count: Int) -> Result<Int, ObjCProtocolListTableFailure> {
+    private func checkedByteCount(count: Int) -> ObjCMetadataTableRead<Int> {
         let elementSize = MemoryLayout<ObjCProtocol.Layout.Pointer>.size
-        return ObjCProtocolReadLimits.checkedTableByteCount(
+        return ObjCMetadataTableReader.checkedByteCount(
             count: count,
             stride: elementSize
         )
@@ -389,27 +305,30 @@ extension ObjCProtocolListProtocol {
         guard !rangeOverflow else {
             return .failure(.rangeOverflow(startOffset: tableOffset, byteCount: byteCount))
         }
+        let (fieldBase, fieldBaseOverflow) = offset.addingReportingOverflow(
+            MemoryLayout<Header>.size
+        )
 
-        let pointers: [ObjCProtocol.Layout.Pointer]
-        switch fileHandle.readProtocolTable(
+        let pointerEntries: [ObjCMetadataTableEntry<ObjCProtocol.Layout.Pointer>]
+        switch ObjCMetadataTableReader.readFile(
+            fileHandle,
             offset: tableOffset,
+            logicalOffset: fieldBaseOverflow ? nil : fieldBase,
             count: count,
             as: ObjCProtocol.Layout.Pointer.self
         ) {
-        case .success(let value): pointers = value
+        case .success(let value): pointerEntries = value
         case .failure(let failure): return .failure(failure)
         }
 
         var entries: [ObjCProtocolListReadEntry<MachOFile, ObjCProtocol>] = []
         entries.reserveCapacity(count)
 
-        let (fieldBase, fieldBaseOverflow) = offset.addingReportingOverflow(MemoryLayout<Header>.size)
-        for (index, pointer) in pointers.enumerated() {
-            let (entryDelta, entryDeltaOverflow) = index.multipliedReportingOverflow(
-                by: MemoryLayout<ObjCProtocol.Layout.Pointer>.stride
-            )
-            let (fieldOffset, fieldOffsetOverflow) = fieldBase.addingReportingOverflow(entryDelta)
-            guard !fieldBaseOverflow, !entryDeltaOverflow, !fieldOffsetOverflow,
+        for pointerEntry in pointerEntries {
+            let index = pointerEntry.index
+            let pointer = pointerEntry.value
+            guard !fieldBaseOverflow,
+                  let fieldOffset = pointerEntry.logicalOffset,
                   let rawValue = UInt64(exactly: pointer) else {
                 entries.append(.failure(.init(index: index, reason: .invalidEntryOffset)))
                 continue
@@ -490,46 +409,30 @@ extension ObjCProtocolListProtocol {
         case .success(let value): count = value
         case .failure(let failure): return .failure(failure)
         }
-        let byteCount: Int
-        switch checkedByteCount(count: count) {
-        case .success(let value): byteCount = value
-        case .failure(let failure): return .failure(failure)
-        }
-
         let (tableAddress, headerOverflow) = listAddress.addingReportingOverflow(
             UInt(MemoryLayout<Header>.size)
         )
         guard !headerOverflow else {
-            return .failure(.rangeOverflow(startOffset: UInt64(imageAddress), byteCount: byteCount))
-        }
-        let (_, tableOverflow) = tableAddress.addingReportingOverflow(UInt(byteCount))
-        guard !tableOverflow else {
-            return .failure(.rangeOverflow(startOffset: UInt64(tableAddress), byteCount: byteCount))
+            return .failure(.rangeOverflow(startOffset: UInt64(imageAddress), byteCount: 0))
         }
 
-        if byteCount > 0 {
-            guard let tablePointer = UnsafeRawPointer(bitPattern: tableAddress),
-                  isPointerSafelyReadable(tablePointer, length: byteCount) else {
-                return .failure(.unreadableImageRange(address: tableAddress, byteCount: byteCount))
-            }
-        }
-
-        let pointerSize = MemoryLayout<ObjCProtocol.Layout.Pointer>.size
-        var pointers: [ObjCProtocol.Layout.Pointer] = []
-        pointers.reserveCapacity(count)
-        for index in 0..<count {
-            let entryAddress = tableAddress + UInt(index * pointerSize)
-            guard let entryPointer = UnsafeRawPointer(bitPattern: entryAddress) else {
-                return .failure(.unreadableImageRange(address: entryAddress, byteCount: pointerSize))
-            }
-            pointers.append(entryPointer.loadUnaligned(as: ObjCProtocol.Layout.Pointer.self))
+        let pointerEntries: [ObjCMetadataTableEntry<ObjCProtocol.Layout.Pointer>]
+        switch ObjCMetadataTableReader.readImage(
+            address: tableAddress,
+            count: count,
+            as: ObjCProtocol.Layout.Pointer.self
+        ) {
+        case .success(let value): pointerEntries = value
+        case .failure(let failure): return .failure(failure)
         }
 
         var entries: [ObjCProtocolListReadEntry<MachOImage, ObjCProtocol>] = []
         entries.reserveCapacity(count)
         var runtimeNameReader = ObjCProtocolRuntimeNameReader()
 
-        for (index, pointer) in pointers.enumerated() {
+        for pointerEntry in pointerEntries {
+            let index = pointerEntry.index
+            let pointer = pointerEntry.value
             guard let rawValue = UInt64(exactly: pointer) else {
                 entries.append(.failure(.init(index: index, reason: .invalidPointer)))
                 continue

@@ -55,8 +55,8 @@ final class ObjCRelativeMemberListSafetyTests: XCTestCase {
         XCTAssertEqual(
             failure.reason,
             .excessiveElementCount(
-                actual: ObjCProtocolReadLimits.maximumListEntries + 1,
-                maximum: ObjCProtocolReadLimits.maximumListEntries
+                actual: ObjCMetadataReadLimits.maximumListEntries + 1,
+                maximum: ObjCMetadataReadLimits.maximumListEntries
             )
         )
         XCTAssertEqual(propertyNames(in: result), ["p1", "p2", "p3"])
@@ -478,7 +478,7 @@ private final class SyntheticRelativeMemberImageFixture {
             count = 1
         case .excessiveCount:
             entsizeAndFlags = UInt32(expectedEntrySize)
-            count = UInt32(ObjCProtocolReadLimits.maximumListEntries + 1)
+            count = UInt32(ObjCMetadataReadLimits.maximumListEntries + 1)
         case .misalignedAddress:
             entsizeAndFlags = UInt32(expectedEntrySize)
             count = 1

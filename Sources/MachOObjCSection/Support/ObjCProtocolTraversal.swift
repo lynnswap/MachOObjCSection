@@ -92,7 +92,7 @@ internal struct ObjCProtocolTraversalContext {
     }
 
     mutating func record(
-        tableFailure: ObjCProtocolListTableFailure,
+        tableFailure: ObjCMetadataTableFailure,
         listOffset: Int
     ) {
         diagnostics.append(

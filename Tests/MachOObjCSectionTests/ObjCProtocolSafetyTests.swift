@@ -66,14 +66,14 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             return true
         }
 
-        let excessiveCount = ObjCProtocolReadLimits.maximumListEntries + 1
+        let excessiveCount = ObjCMetadataReadLimits.maximumListEntries + 1
         let excessiveList = ObjCProtocolList64(
             offset: SyntheticGraph.protocolListOffset(for: 0),
             header: .init(_count: UInt64(excessiveCount))
         )
         assertTableFailure(excessiveList.readProtocols(in: fixture.machO)) {
             guard case let .excessiveElementCount(actual, maximum) = $0 else { return false }
-            return actual == excessiveCount && maximum == ObjCProtocolReadLimits.maximumListEntries
+            return actual == excessiveCount && maximum == ObjCMetadataReadLimits.maximumListEntries
         }
 
         let overflowingCount = UInt64(Int.max / MemoryLayout<UInt64>.size + 1)
@@ -124,7 +124,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
     func testLoadedImageRejectsExcessiveCountBeforeReadableMappingWork() throws {
         let fixture = SyntheticReadableImageFixture()
-        let excessiveCount = ObjCProtocolReadLimits.maximumListEntries + 1
+        let excessiveCount = ObjCMetadataReadLimits.maximumListEntries + 1
         let list = ObjCProtocolList64(
             offset: fixture.tableOffset,
             header: .init(_count: UInt64(excessiveCount))
@@ -132,7 +132,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         assertTableFailure(list.readProtocols(in: fixture.machO)) {
             guard case let .excessiveElementCount(actual, maximum) = $0 else { return false }
             return actual == excessiveCount
-                && maximum == ObjCProtocolReadLimits.maximumListEntries
+                && maximum == ObjCMetadataReadLimits.maximumListEntries
         }
     }
 
@@ -1334,7 +1334,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
     }
 
     func testRelativeTablesRejectExcessiveByteCountForFileAndImage() throws {
-        let advertisedStride = ObjCProtocolReadLimits.maximumTableByteCount + 1
+        let advertisedStride = ObjCMetadataReadLimits.maximumTableByteCount + 1
         let header = EntrySizeListHeader(
             layout: .init(entsizeAndFlags: UInt32(advertisedStride), count: 1)
         )
@@ -1359,7 +1359,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             fileFailure.failure,
             .excessiveByteCount(
                 actual: advertisedStride,
-                maximum: ObjCProtocolReadLimits.maximumTableByteCount
+                maximum: ObjCMetadataReadLimits.maximumTableByteCount
             )
         )
 
@@ -1389,7 +1389,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             imageFailure.failure,
             .excessiveByteCount(
                 actual: advertisedStride,
-                maximum: ObjCProtocolReadLimits.maximumTableByteCount
+                maximum: ObjCMetadataReadLimits.maximumTableByteCount
             )
         )
     }
@@ -1901,7 +1901,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
     private func assertTableFailure<Source, Protocol>(
         _ outcome: ObjCProtocolListReadOutcome<Source, Protocol>,
-        matches: (ObjCProtocolListTableFailure) -> Bool,
+        matches: (ObjCMetadataTableFailure) -> Bool,
         file: StaticString = #filePath,
         line: UInt = #line
     ) {
@@ -2416,7 +2416,7 @@ private final class SyntheticReadableImageFixture {
     private let storage: UnsafeMutableRawPointer
 
     init() {
-        let tableBytes = (ObjCProtocolReadLimits.maximumListEntries + 1)
+        let tableBytes = (ObjCMetadataReadLimits.maximumListEntries + 1)
             * MemoryLayout<UInt64>.size
         let byteCount = tableOffset + MemoryLayout<ObjCProtocolListHeader64>.size + tableBytes
         let allocatedStorage = UnsafeMutableRawPointer.allocate(byteCount: byteCount, alignment: 16)

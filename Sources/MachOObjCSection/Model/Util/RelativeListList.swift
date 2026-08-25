@@ -91,7 +91,7 @@ internal func defaultRelativeImageLoadState(at index: Int) -> ObjCImageLoadState
 #endif
 }
 
-extension ObjCProtocolListTableFailure {
+extension ObjCMetadataTableFailure {
     internal var relativeListReason: ObjCRelativeListFailure.Reason {
         switch self {
         case .unsupportedListEncoding:
@@ -102,6 +102,19 @@ extension ObjCProtocolListTableFailure {
             return .invalidElementCount(count)
         case .invalidSignedElementCount(let count):
             return .invalidSignedElementCount(count)
+        case .invalidElementStride:
+            return .invalidRelativeListLocation
+        case let .elementStrideTooSmall(advertised, minimum):
+            return .invalidRelativeEntrySize(
+                advertised: UInt32(clamping: advertised),
+                minimum: minimum
+            )
+        case let .unexpectedElementStride(advertised, expected):
+            return .invalidListEntrySize(advertised: advertised, expected: expected)
+        case let .misalignedTableOffset(offset, alignment):
+            return .misalignedListOffset(offset: offset, requiredAlignment: alignment)
+        case let .misalignedTableAddress(address, alignment):
+            return .misalignedListAddress(address: address, requiredAlignment: alignment)
         case let .excessiveElementCount(actual, maximum):
             return .excessiveElementCount(actual: actual, maximum: maximum)
         case let .excessiveByteCount(actual, maximum):
@@ -209,14 +222,16 @@ extension RelativeListListProtocol {
         }
 
         let layouts: [Entry.Layout]
-        switch fileHandle.readProtocolTable(
+        switch ObjCMetadataTableReader.readFile(
+            fileHandle,
             offset: tableOffset,
+            logicalOffset: offset + MemoryLayout<Header>.size,
             count: countAndStride.count,
             stride: countAndStride.stride,
             as: Entry.Layout.self
         ) {
         case .success(let value):
-            layouts = value
+            layouts = value.map(\.value)
         case .failure(let failure):
             return .failure(
                 .table(
@@ -237,7 +252,7 @@ extension RelativeListListProtocol {
         case .failure(let failure): return .failure(failure)
         }
         let byteCount: Int
-        switch ObjCProtocolReadLimits.checkedTableByteCount(
+        switch ObjCMetadataTableReader.checkedByteCount(
             count: countAndStride.count,
             stride: countAndStride.stride
         ) {
@@ -280,18 +295,27 @@ extension RelativeListListProtocol {
             }
         }
 
-        var layouts: [Entry.Layout] = []
-        layouts.reserveCapacity(countAndStride.count)
-        for index in 0..<countAndStride.count {
-            let entryAddress = tableAddress + UInt(index * countAndStride.stride)
-            guard let pointer = UnsafeRawPointer(bitPattern: entryAddress) else {
-                return .failure(
-                    .table(outerListOffset: offset, reason: .invalidRelativeListLocation)
+        let tableEntries: [ObjCMetadataTableEntry<Entry.Layout>]
+        switch ObjCMetadataTableReader.readImage(
+            address: tableAddress,
+            logicalOffset: offset + MemoryLayout<Header>.size,
+            count: countAndStride.count,
+            stride: countAndStride.stride,
+            as: Entry.Layout.self
+        ) {
+        case .success(let value): tableEntries = value
+        case .failure(let failure):
+            return .failure(
+                .table(
+                    outerListOffset: offset,
+                    reason: failure.relativeListReason
                 )
-            }
-            layouts.append(pointer.loadUnaligned(as: Entry.Layout.self))
+            )
         }
-        return checkedRelativeEntries(layouts: layouts, stride: countAndStride.stride)
+        return checkedRelativeEntries(
+            layouts: tableEntries.map(\.value),
+            stride: countAndStride.stride
+        )
     }
 
     internal func resolveRelativeLists(

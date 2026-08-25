@@ -105,8 +105,10 @@ extension ObjCMemberRelativeListListProtocol {
                         )
                     )
                 }
-                switch location.file.readProtocolTable(
+                switch ObjCMetadataTableReader.readFile(
+                    location.file,
                     offset: tableOffset,
+                    logicalOffset: listOffset + MemoryLayout<EntrySizeListHeader>.size,
                     count: count,
                     stride: list.entrySize,
                     as: UInt8.self
@@ -166,7 +168,7 @@ extension ObjCMemberRelativeListListProtocol {
                     return .failure(failure)
                 }
                 let byteCount: Int
-                switch ObjCProtocolReadLimits.checkedTableByteCount(
+                switch ObjCMetadataTableReader.checkedByteCount(
                     count: count,
                     stride: list.entrySize
                 ) {

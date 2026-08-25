@@ -34,18 +34,50 @@ extension ObjCIvarListProtocol {
 
 extension ObjCIvarListProtocol where ObjCIvar: LayoutWrapper {
     public func ivars(in machO: MachOImage) -> [ObjCIvar]? {
-        let offset = offset + MemoryLayout<Header>.size
-        let ptr = machO.ptr.advanced(by: offset)
-        let sequnece = MemorySequence(
-            basePointer: ptr
-                .assumingMemoryBound(to: ObjCIvar.Layout.self),
-            numberOfElements: numericCast(header.count)
-        )
-        return sequnece.enumerated().map {
-            ObjCIvar(
-                layout: $1,
-                offset: offset + ObjCIvar.layoutSize * $0
-            )
+        readIvars(in: machO).values
+    }
+
+    public func ivars(in machO: MachOFile) -> [ObjCIvar]? {
+        readIvars(in: machO).values
+    }
+
+    internal func readIvars(
+        in machO: MachOImage
+    ) -> ObjCMemberTableReadOutcome<ObjCIvar> {
+        switch readImageTable(
+            in: machO,
+            expectedStride: ObjCIvar.layoutSize,
+            requiredAlignment: MemoryLayout<ObjCIvar.Layout>.alignment,
+            as: ObjCIvar.Layout.self
+        ) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let entries):
+            let ivars = entries.compactMap { entry -> ObjCIvar? in
+                guard let offset = entry.logicalOffset else { return nil }
+                return ObjCIvar(layout: entry.value, offset: offset)
+            }
+            return .success(.init(values: ivars, failures: []))
+        }
+    }
+
+    internal func readIvars(
+        in machO: MachOFile
+    ) -> ObjCMemberTableReadOutcome<ObjCIvar> {
+        switch readFileTable(
+            in: machO,
+            expectedStride: ObjCIvar.layoutSize,
+            requiredAlignment: MemoryLayout<ObjCIvar.Layout>.alignment,
+            as: ObjCIvar.Layout.self
+        ) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let entries):
+            let ivars = entries.compactMap { entry -> ObjCIvar? in
+                guard let offset = entry.logicalOffset else { return nil }
+                return ObjCIvar(layout: entry.value, offset: offset)
+            }
+            return .success(.init(values: ivars, failures: []))
         }
     }
 }

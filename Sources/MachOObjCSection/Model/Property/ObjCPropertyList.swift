@@ -66,103 +66,69 @@ extension ObjCPropertyList {
     public func properties(
         in machO: MachOImage
     ) -> [ObjCProperty] {
-        // TODO: Support listOfLists
-        guard !isListOfLists else { return [] }
-
-        let ptr = machO.ptr.advanced(by: offset)
-        let start = ptr.advanced(by: MemoryLayout<Header>.size)
-        let sequence = MemorySequence(
-            basePointer: start.assumingMemoryBound(
-                to: ObjCProperty.Property.self
-            ),
-            numberOfElements: count
-        )
-        return sequence
-            .map { ObjCProperty($0) }
+        readProperties(in: machO).values ?? []
     }
 
     public func properties(
         in machO: MachOFile
     ) -> [ObjCProperty] {
+        readProperties(in: machO).values ?? []
+    }
+
+    internal func readProperties(
+        in machO: MachOImage
+    ) -> ObjCMemberTableReadOutcome<ObjCProperty> {
         guard !isListOfLists else {
-            assertionFailure()
-            return []
+            return .failure(.unsupportedListEncoding)
         }
 
-        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: numericCast(offset)) else {
-            return []
-        }
-
-        if machO.is64Bit {
-            let sequence: DataSequence<ObjCProperty.Property64> = fileHandle
-                .readDataSequence(
-                    offset: fileOffset + numericCast(MemoryLayout<Header>.size),
-                    numberOfElements: count
+        switch readImageTable(
+            in: machO,
+            expectedStride: MemoryLayout<ObjCProperty.Property>.size,
+            requiredAlignment: MemoryLayout<ObjCProperty.Property>.alignment,
+            as: ObjCProperty.Property.self
+        ) {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let entries):
+            return .success(
+                .init(
+                    values: entries.map { ObjCProperty($0.value) },
+                    failures: []
                 )
-            return sequence.enumerated()
-                .map { i, property in
-                    let fieldOffset: Int = offset
-                    + MemoryLayout<Header>.size
-                    + MemoryLayout<ObjCProperty.Property64>.size * i
+            )
+        }
+    }
+
+    internal func readProperties(
+        in machO: MachOFile
+    ) -> ObjCMemberTableReadOutcome<ObjCProperty> {
+        guard !isListOfLists else {
+            return .failure(.unsupportedListEncoding)
+        }
+        if machO.is64Bit {
+            switch readFileTable(
+                in: machO,
+                expectedStride: MemoryLayout<ObjCProperty.Property64>.size,
+                requiredAlignment: MemoryLayout<ObjCProperty.Property64>.alignment,
+                as: ObjCProperty.Property64.self
+            ) {
+            case .failure(let failure):
+                return .failure(failure)
+            case .success(let entries):
+                let properties = entries.compactMap { entry -> ObjCProperty.UnresolvedProperty? in
+                    guard let fieldOffset = entry.logicalOffset else { return nil }
                     return ObjCProperty.UnresolvedProperty(
                         name: .init(
                             fieldOffset: fieldOffset,
-                            value: property.name
+                            value: entry.value.name
                         ),
                         attributes: .init(
                             fieldOffset: fieldOffset + 8,
-                            value: property.attributes
+                            value: entry.value.attributes
                         )
                     )
-                }
-                .compactMap {
-                    machO.resolveRebase($0)
-                }
-                .compactMap {
-                    var name = ""
-                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
-                        name = fileHandle.readString(
-                            offset: fileOffset
-                        ) ?? ""
-                    }
-
-                    var attributes = ""
-                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.attributes) {
-                        attributes = fileHandle.readString(
-                            offset: fileOffset
-                        ) ?? ""
-                    }
-
-                    return ObjCProperty(
-                        name: name,
-                        attributes: attributes
-                    )
-                }
-        } else {
-            let sequence: DataSequence<ObjCProperty.Property32> = fileHandle
-                .readDataSequence(
-                    offset: fileOffset + numericCast(MemoryLayout<Header>.size),
-                    numberOfElements: count
-                )
-            return sequence.enumerated()
-                .map { i, property in
-                    let fieldOffset: Int = offset
-                    + MemoryLayout<Header>.size
-                    + MemoryLayout<ObjCProperty.Property32>.size * i
-                    return ObjCProperty.UnresolvedProperty(
-                        name: .init(
-                            fieldOffset: fieldOffset,
-                            value: numericCast(property.name)
-                        ),
-                        attributes: .init(
-                            fieldOffset: fieldOffset + 4,
-                            value: numericCast(property.attributes)
-                        )
-                    )
-                }
-                .compactMap {
-                    machO.resolveRebase($0)
-                }
+                }.compactMap { machO.resolveRebase($0) }
                 .map {
                     var name = ""
                     if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
@@ -183,6 +149,53 @@ extension ObjCPropertyList {
                         attributes: attributes
                     )
                 }
+                return .success(.init(values: properties, failures: []))
+            }
+        } else {
+            switch readFileTable(
+                in: machO,
+                expectedStride: MemoryLayout<ObjCProperty.Property32>.size,
+                requiredAlignment: MemoryLayout<ObjCProperty.Property32>.alignment,
+                as: ObjCProperty.Property32.self
+            ) {
+            case .failure(let failure):
+                return .failure(failure)
+            case .success(let entries):
+                let properties = entries.compactMap { entry -> ObjCProperty.UnresolvedProperty? in
+                    guard let fieldOffset = entry.logicalOffset else { return nil }
+                    return ObjCProperty.UnresolvedProperty(
+                        name: .init(
+                            fieldOffset: fieldOffset,
+                            value: UInt64(entry.value.name)
+                        ),
+                        attributes: .init(
+                            fieldOffset: fieldOffset + 4,
+                            value: UInt64(entry.value.attributes)
+                        )
+                    )
+                }.compactMap { machO.resolveRebase($0) }
+                .map {
+                    var name = ""
+                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
+                        name = fileHandle.readString(
+                            offset: fileOffset
+                        ) ?? ""
+                    }
+
+                    var attributes = ""
+                    if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.attributes) {
+                        attributes = fileHandle.readString(
+                            offset: fileOffset
+                        ) ?? ""
+                    }
+
+                    return ObjCProperty(
+                        name: name,
+                        attributes: attributes
+                    )
+                }
+                return .success(.init(values: properties, failures: []))
+            }
         }
     }
 }

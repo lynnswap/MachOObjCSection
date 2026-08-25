@@ -108,167 +108,187 @@ extension ObjCMethodList {
     public func methods(
         in machO: MachOImage
     ) -> [ObjCMethod] {
-        // TODO: Support listOfLists
-        guard !isListOfLists else { return [] }
-
-        let ptr = machO.ptr.advanced(by: offset)
-        let start = ptr.advanced(by: MemoryLayout<Header>.size)
-
-        switch listKind {
-        case .pointer:
-            let sequence = MemorySequence(
-                basePointer: start.assumingMemoryBound(
-                    to: ObjCMethod.Pointer.self
-                ),
-                numberOfElements: count
-            )
-            return sequence
-                .map { ObjCMethod($0) }
-
-        case .relativeDirectSelectors:
-            let sequence = MemorySequence(
-                basePointer: start.assumingMemoryBound(
-                    to: ObjCMethod.RelativeDirect.self
-                ),
-                numberOfElements: count
-            )
-            let size = MemoryLayout<ObjCMethod.RelativeDirect>.size
-            return sequence
-                .enumerated()
-                .map {
-                    ObjCMethod(
-                        $1,
-                        at: start.advanced(by: size * $0),
-                        isRelativeDirectType: false
-                    )
-                }
-
-        case .relativeDirectSelectorsAndTypes:
-            let sequence = MemorySequence(
-                basePointer: start.assumingMemoryBound(
-                    to: ObjCMethod.RelativeDirect.self
-                ),
-                numberOfElements: count
-            )
-            let size = MemoryLayout<ObjCMethod.RelativeDirect>.size
-            return sequence
-                .enumerated()
-                .map {
-                    ObjCMethod(
-                        $1,
-                        at: start.advanced(by: size * $0),
-                        isRelativeDirectType: true
-                    )
-                }
-
-        case .relativeIndirect:
-            let sequence = MemorySequence(
-                basePointer: start.assumingMemoryBound(
-                    to: ObjCMethod.RelativeInDirect.self
-                ),
-                numberOfElements: count
-            )
-            let size = MemoryLayout<ObjCMethod.RelativeInDirect>.size
-            return sequence
-                .enumerated()
-                .map {
-                    ObjCMethod($1, at: start.advanced(by: size * $0))
-                }
-        }
+        readMethods(in: machO).values ?? []
     }
 
     public func methods(
         in machO: MachOFile
     ) -> [ObjCMethod]? {
+        readMethods(in: machO).values
+    }
+
+    internal func readMethods(
+        in machO: MachOImage
+    ) -> ObjCMemberTableReadOutcome<ObjCMethod> {
         guard !isListOfLists else {
-            assertionFailure()
-            return nil
+            return .failure(.unsupportedListEncoding)
         }
 
-        let offset: UInt64 = numericCast(offset + MemoryLayout<Header>.size)
-        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: offset) else {
-            return nil
+        switch listKind {
+        case .pointer:
+            return decodedImageMethods(
+                readImageTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.Pointer>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.Pointer>.alignment,
+                    as: ObjCMethod.Pointer.self
+                )
+            ) { entry in
+                return ObjCMethod(entry.value)
+            }
+        case .relativeDirectSelectors, .relativeDirectSelectorsAndTypes:
+            let usesRelativeDirectType = listKind == .relativeDirectSelectorsAndTypes
+            return decodedImageMethods(
+                readImageTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.RelativeDirect>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.RelativeDirect>.alignment,
+                    as: ObjCMethod.RelativeDirect.self
+                )
+            ) { entry in
+                guard let address = entry.address,
+                      let pointer = UnsafeRawPointer(bitPattern: address) else {
+                    return nil
+                }
+                return ObjCMethod(
+                    entry.value,
+                    at: pointer,
+                    isRelativeDirectType: usesRelativeDirectType
+                )
+            }
+        case .relativeIndirect:
+            return decodedImageMethods(
+                readImageTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.RelativeInDirect>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.RelativeInDirect>.alignment,
+                    as: ObjCMethod.RelativeInDirect.self
+                )
+            ) { entry in
+                guard let address = entry.address,
+                      let pointer = UnsafeRawPointer(bitPattern: address) else {
+                    return nil
+                }
+                return ObjCMethod(entry.value, at: pointer)
+            }
+        }
+    }
+
+    internal func readMethods(
+        in machO: MachOFile
+    ) -> ObjCMemberTableReadOutcome<ObjCMethod> {
+        guard !isListOfLists else {
+            return .failure(.unsupportedListEncoding)
         }
 
         switch listKind {
         case .pointer where machO.is64Bit:
-            let sequence: DataSequence<ObjCMethod.Pointer64> = fileHandle.readDataSequence(
-                offset: fileOffset,
-                numberOfElements: count,
-                swapHandler: nil
-            )
-            return sequence
-                .map { pointerMethod($0, in: machO) }
+            return decodedFileMethods(
+                readFileTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.Pointer64>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.Pointer64>.alignment,
+                    as: ObjCMethod.Pointer64.self
+                )
+            ) { entry in
+                pointerMethod(entry.value, in: machO)
+            }
         case .pointer:
-            let sequence: DataSequence<ObjCMethod.Pointer32> = fileHandle.readDataSequence(
-                offset: fileOffset,
-                numberOfElements: count,
-                swapHandler: nil
-            )
-            return sequence
-                .map { pointerMethod($0, in: machO) }
-
+            return decodedFileMethods(
+                readFileTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.Pointer32>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.Pointer32>.alignment,
+                    as: ObjCMethod.Pointer32.self
+                )
+            ) { entry in
+                pointerMethod(entry.value, in: machO)
+            }
         case .relativeIndirect:
-            let sequence: DataSequence<ObjCMethod.RelativeInDirect> = fileHandle.readDataSequence(
-                offset: fileOffset,
-                numberOfElements: count,
-                swapHandler: nil
-            )
-            let size = MemoryLayout<ObjCMethod.RelativeInDirect>.size
-            return sequence.enumerated()
-                .map {
-                    let offset = numericCast(offset) + $0 * size
-                    let fileOffset = numericCast(fileOffset) + $0 * size
-                    return indirectMethod(
-                        $1,
-                        in: machO,
-                        fileHandle: fileHandle,
-                        entryOffset: numericCast(offset),
-                        fileOffset: numericCast(fileOffset)
-                    )
+            return decodedFileMethods(
+                readFileTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.RelativeInDirect>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.RelativeInDirect>.alignment,
+                    as: ObjCMethod.RelativeInDirect.self
+                )
+            ) { entry in
+                guard let logicalOffset = entry.logicalOffset,
+                      let logicalOffset64 = UInt64(exactly: logicalOffset),
+                      let fileOffset = entry.fileOffset,
+                      let (fileHandle, _) = machO.fileHandleAndOffset(
+                        forOffset: logicalOffset64
+                      ) else {
+                    return .failure(.invalidLogicalOffset)
                 }
-
-        case .relativeDirectSelectors:
-            let sequence: DataSequence<ObjCMethod.RelativeDirect> = fileHandle.readDataSequence(
-                offset: fileOffset,
-                numberOfElements: count,
-                swapHandler: nil
-            )
-
-            let size = MemoryLayout<ObjCMethod.RelativeDirect>.size
+                return indirectMethod(
+                    entry.value,
+                    in: machO,
+                    fileHandle: fileHandle,
+                    entryOffset: logicalOffset64,
+                    fileOffset: fileOffset
+                )
+            }
+        case .relativeDirectSelectors, .relativeDirectSelectorsAndTypes:
             let nameOffsetInCache = machO.relativeMethodSelectorBaseAddressOffset ?? 0
-            return sequence.enumerated()
-                .map {
-                    let offset = numericCast(offset) + $0 * size
-                    return directMethod(
-                        $1,
-                        in: machO,
-                        entryOffset: numericCast(offset),
-                        nameBaseOffset: nameOffsetInCache,
-                        typeBaseOffset: nil
-                    )
+            let usesRelativeDirectType = listKind == .relativeDirectSelectorsAndTypes
+            return decodedFileMethods(
+                readFileTable(
+                    in: machO,
+                    expectedStride: MemoryLayout<ObjCMethod.RelativeDirect>.size,
+                    requiredAlignment: MemoryLayout<ObjCMethod.RelativeDirect>.alignment,
+                    as: ObjCMethod.RelativeDirect.self
+                )
+            ) { entry in
+                guard let logicalOffset = entry.logicalOffset,
+                      let entryOffset = UInt64(exactly: logicalOffset) else {
+                    return .failure(.invalidLogicalOffset)
                 }
+                return directMethod(
+                    entry.value,
+                    in: machO,
+                    entryOffset: entryOffset,
+                    nameBaseOffset: nameOffsetInCache,
+                    typeBaseOffset: usesRelativeDirectType ? nameOffsetInCache : nil
+                )
+            }
+        }
+    }
 
-        case .relativeDirectSelectorsAndTypes:
-            let sequence: DataSequence<ObjCMethod.RelativeDirect> = fileHandle.readDataSequence(
-                offset: fileOffset,
-                numberOfElements: count,
-                swapHandler: nil
+    private func decodedImageMethods<Layout>(
+        _ result: ObjCMetadataTableRead<[ObjCMetadataTableEntry<Layout>]>,
+        transform: (ObjCMetadataTableEntry<Layout>) -> ObjCMethod?
+    ) -> ObjCMemberTableReadOutcome<ObjCMethod> {
+        switch result {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let entries):
+            return .success(
+                .init(values: entries.compactMap(transform), failures: [])
             )
+        }
+    }
 
-            let size = MemoryLayout<ObjCMethod.RelativeDirect>.size
-            let nameOffsetInCache = machO.relativeMethodSelectorBaseAddressOffset ?? 0
-            return sequence.enumerated()
-                .map {
-                    let offset = numericCast(offset) + $0 * size
-                    return directMethod(
-                        $1,
-                        in: machO,
-                        entryOffset: numericCast(offset),
-                        nameBaseOffset: nameOffsetInCache,
-                        typeBaseOffset: nameOffsetInCache // NOTE: offset from selector
-                    )
+    private func decodedFileMethods<Layout>(
+        _ result: ObjCMetadataTableRead<[ObjCMetadataTableEntry<Layout>]>,
+        transform: (ObjCMetadataTableEntry<Layout>) -> Result<ObjCMethod, ObjCMetadataTableEntryFailureReason>
+    ) -> ObjCMemberTableReadOutcome<ObjCMethod> {
+        switch result {
+        case .failure(let failure):
+            return .failure(failure)
+        case .success(let entries):
+            var values: [ObjCMethod] = []
+            var failures: [ObjCMetadataTableEntryFailure] = []
+            values.reserveCapacity(entries.count)
+            for entry in entries {
+                switch transform(entry) {
+                case .success(let method):
+                    values.append(method)
+                case .failure(let reason):
+                    failures.append(.init(index: entry.index, reason: reason))
                 }
+            }
+            return .success(.init(values: values, failures: failures))
         }
     }
 }
@@ -277,46 +297,75 @@ extension ObjCMethodList {
     private func pointerMethod(
         _ pointer: ObjCMethod.Pointer64,
         in machO: MachOFile
-    ) -> ObjCMethod {
-        let imp: UInt64 = if let cache = machO.cache, pointer.imp > 0 {
-            numericCast(pointer.imp) - cache.mainCacheHeader.sharedRegionStart
+    ) -> Result<ObjCMethod, ObjCMetadataTableEntryFailureReason> {
+        let imp: UInt64
+        if let cache = machO.cache, pointer.imp > 0 {
+            guard let offset = checkedCacheOffset(
+                address: pointer.imp,
+                sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+            ) else {
+                return .failure(.invalidImplementationOffset)
+            }
+            imp = offset
+        } else if pointer.imp == 0 {
+            imp = 0
         } else {
-            machO.fileOffset(of: numericCast(pointer.imp)) ?? 0
+            guard let offset = machO.fileOffset(of: pointer.imp) else {
+                return .failure(.invalidImplementationOffset)
+            }
+            imp = offset
         }
 
-        return ObjCMethod(
-            name: resolveString(
-                in: machO,
-                forAddress: pointer.name
-            ),
-            types: resolveString(
-                in: machO,
-                forAddress: pointer.types
-            ),
-            imp: imp
+        return .success(
+            ObjCMethod(
+                name: resolveString(
+                    in: machO,
+                    forAddress: pointer.name
+                ),
+                types: resolveString(
+                    in: machO,
+                    forAddress: pointer.types
+                ),
+                imp: imp
+            )
         )
     }
 
     private func pointerMethod(
         _ pointer: ObjCMethod.Pointer32,
         in machO: MachOFile
-    ) -> ObjCMethod {
-        let imp: UInt64 = if let cache = machO.cache, pointer.imp > 0 {
-            numericCast(pointer.imp) - cache.mainCacheHeader.sharedRegionStart
+    ) -> Result<ObjCMethod, ObjCMetadataTableEntryFailureReason> {
+        let rawImplementation = UInt64(pointer.imp)
+        let imp: UInt64
+        if let cache = machO.cache, pointer.imp > 0 {
+            guard let offset = checkedCacheOffset(
+                address: rawImplementation,
+                sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+            ) else {
+                return .failure(.invalidImplementationOffset)
+            }
+            imp = offset
+        } else if pointer.imp == 0 {
+            imp = 0
         } else {
-            machO.fileOffset(of: numericCast(pointer.imp)) ?? 0
+            guard let offset = machO.fileOffset(of: rawImplementation) else {
+                return .failure(.invalidImplementationOffset)
+            }
+            imp = offset
         }
 
-        return ObjCMethod(
-            name: resolveString(
-                in: machO,
-                forAddress: numericCast(pointer.name)
-            ),
-            types: resolveString(
-                in: machO,
-                forAddress: numericCast(pointer.types)
-            ),
-            imp: imp
+        return .success(
+            ObjCMethod(
+                name: resolveString(
+                    in: machO,
+                    forAddress: UInt64(pointer.name)
+                ),
+                types: resolveString(
+                    in: machO,
+                    forAddress: UInt64(pointer.types)
+                ),
+                imp: imp
+            )
         )
     }
 
@@ -326,36 +375,49 @@ extension ObjCMethodList {
         fileHandle: MachOFile.File,
         entryOffset: UInt64,
         fileOffset: UInt64
-    ) -> ObjCMethod {
-        let namePointerOffset = resolvedOffset(
+    ) -> Result<ObjCMethod, ObjCMetadataTableEntryFailureReason> {
+        guard let namePointerOffset = resolvedOffset(
             base: fileOffset,
             relative: relativeIndirect.name.offset
-        ) ?? 0
-        let nameAddress: UInt64 = (try? fileHandle.read(
-            offset: numericCast(namePointerOffset),
+        ) else {
+            return .failure(.invalidRelativeDisplacement)
+        }
+        guard let nameAddress = fileHandle.readLayout(
+            offset: namePointerOffset,
             as: UInt64.self
-        )) ?? 0
-        let types = resolvedOffset(
+        ) else {
+            return .failure(
+                .unreadableFileRange(
+                    offset: namePointerOffset,
+                    byteCount: MemoryLayout<UInt64>.size
+                )
+            )
+        }
+        guard let types = resolvedOffset(
             base: fileOffset,
             relative: relativeIndirect.types.offset,
             adjustment: 4
-        ) ?? 0
+        ) else {
+            return .failure(.invalidRelativeDisplacement)
+        }
 
-        let imp = resolvedOffset(
+        guard let imp = resolvedOffset(
             base: entryOffset,
             relative: relativeIndirect.imp.offset,
             adjustment: 8
-        ) ?? 0
+        ) else {
+            return .failure(.invalidRelativeDisplacement)
+        }
 
-        return ObjCMethod(
-            name: resolveString(
-                in: machO,
-                forAddress: nameAddress
-            ),
-            types: fileHandle.readString(
-                offset: numericCast(types)
-            ) ?? "",
-            imp: imp
+        return .success(
+            ObjCMethod(
+                name: resolveString(
+                    in: machO,
+                    forAddress: nameAddress
+                ),
+                types: fileHandle.readString(offset: types) ?? "",
+                imp: imp
+            )
         )
     }
 
@@ -365,42 +427,54 @@ extension ObjCMethodList {
         entryOffset: UInt64,
         nameBaseOffset: UInt64,
         typeBaseOffset: UInt64?
-    ) -> ObjCMethod {
-        let nameOffset = resolvedOffset(
+    ) -> Result<ObjCMethod, ObjCMetadataTableEntryFailureReason> {
+        guard let nameOffset = resolvedOffset(
             base: nameBaseOffset,
             relative: relativeDirect.name.offset
-        ) ?? 0
+        ) else {
+            return .failure(.invalidRelativeDisplacement)
+        }
 
         let typesOffset: UInt64
         if let typeBaseOffset {
-            typesOffset = resolvedOffset(
+            guard let resolved = resolvedOffset(
                 base: typeBaseOffset,
                 relative: relativeDirect.types.offset
-            ) ?? 0
+            ) else {
+                return .failure(.invalidRelativeDisplacement)
+            }
+            typesOffset = resolved
         } else {
-            typesOffset = resolvedOffset(
+            guard let resolved = resolvedOffset(
                 base: entryOffset,
                 relative: relativeDirect.types.offset,
                 adjustment: 4
-            ) ?? 0
+            ) else {
+                return .failure(.invalidRelativeDisplacement)
+            }
+            typesOffset = resolved
         }
 
-        let imp = resolvedOffset(
+        guard let imp = resolvedOffset(
             base: entryOffset,
             relative: relativeDirect.imp.offset,
             adjustment: 8
-        ) ?? 0
+        ) else {
+            return .failure(.invalidRelativeDisplacement)
+        }
 
-        return ObjCMethod(
-            name: resolveString(
-                in: machO,
-                forOffset: nameOffset
-            ),
-            types: resolveString(
-                in: machO,
-                forOffset: typesOffset
-            ),
-            imp: imp
+        return .success(
+            ObjCMethod(
+                name: resolveString(
+                    in: machO,
+                    forOffset: nameOffset
+                ),
+                types: resolveString(
+                    in: machO,
+                    forOffset: typesOffset
+                ),
+                imp: imp
+            )
         )
     }
 }
@@ -411,16 +485,21 @@ extension ObjCMethodList {
         relative: Offset,
         adjustment: UInt64 = 0
     ) -> UInt64? {
-        guard let base = Int64(exactly: base),
-              let relative = Int64(exactly: relative),
-              let adjustment = Int64(exactly: adjustment) else {
-            return nil
+        guard let relative = Int64(exactly: relative) else { return nil }
+        let displaced: UInt64
+        if relative >= 0 {
+            guard let magnitude = UInt64(exactly: relative) else { return nil }
+            let (value, overflow) = base.addingReportingOverflow(magnitude)
+            guard !overflow else { return nil }
+            displaced = value
+        } else {
+            let magnitude = UInt64(relative.magnitude)
+            let (value, underflow) = base.subtractingReportingOverflow(magnitude)
+            guard !underflow else { return nil }
+            displaced = value
         }
-        let resolved = base + relative + adjustment
-        guard resolved >= 0 else {
-            return nil
-        }
-        return UInt64(resolved)
+        let (result, overflow) = displaced.addingReportingOverflow(adjustment)
+        return overflow ? nil : result
     }
 
     private func resolveString(
