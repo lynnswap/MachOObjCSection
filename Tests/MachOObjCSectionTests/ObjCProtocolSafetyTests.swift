@@ -10,6 +10,29 @@ import ObjectiveC
 @testable import MachOKit
 
 final class ObjCProtocolSafetyTests: XCTestCase {
+    func testRuntimeNameReaderCachesFailuresAndHonorsTableBudget() throws {
+        let first = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x1_0000))
+        let second = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x2_0000))
+        let third = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x3_0000))
+        var requestedByteCounts: [Int] = []
+        var reader = ObjCProtocolRuntimeNameReader(
+            maximumTableByteCount: 5,
+            read: { _, maximumByteCount in
+                requestedByteCounts.append(maximumByteCount)
+                return nil
+            }
+        )
+
+        XCTAssertNil(reader.name(at: first, maximumByteCount: 4))
+        XCTAssertEqual(reader.remainingByteCount, 1)
+        XCTAssertNil(reader.name(at: first, maximumByteCount: 4))
+        XCTAssertEqual(reader.remainingByteCount, 1)
+        XCTAssertNil(reader.name(at: second, maximumByteCount: 4))
+        XCTAssertEqual(reader.remainingByteCount, 0)
+        XCTAssertNil(reader.name(at: third, maximumByteCount: 4))
+        XCTAssertEqual(requestedByteCounts, [4, 1])
+    }
+
     func testMemoryProbeRejectsUnreadableMiddlePage() throws {
 #if canImport(Darwin)
         let pageSize = Int(getpagesize())
@@ -273,10 +296,10 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertNil(fixture.machO.resolveImage(containing: rawProtocol.pointer))
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
         XCTAssertEqual(list.protocols(in: fixture.machO)?.count, 0)
-        let runtimeResolver = try XCTUnwrap(RegisteredObjCProtocolNameResolver.runtime)
+        let runtimeResolver = try XCTUnwrap(ObjCProtocolRuntimeResolver.runtime)
         guard case .success(let aliasResult) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: runtimeResolver
+            runtimeResolver: runtimeResolver
         ) else {
             return XCTFail("Expected the runtime to resolve the raw protocol alias")
         }
@@ -299,6 +322,481 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
         XCTAssertEqual(diagnostic.failure, .missingBackingData(entryIndex: 0))
 #endif
+    }
+
+    func testCanonicalCacheProtocolBypassesNameLookupAndPreservesRawIdentity() throws {
+        let name = "CanonicalCacheProtocol"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let cacheUUID = UUID()
+        let protocolLocation = ObjCProtocolDyldCacheLocation(
+            cacheUUID: cacheUUID,
+            unslidAddress: 0x1800_0010_0000,
+            remainingMappedByteCount: UInt(MemoryLayout<ObjCProtocol64.Layout>.size)
+        )
+        let nameLocation = ObjCProtocolDyldCacheLocation(
+            cacheUUID: cacheUUID,
+            unslidAddress: 0x1800_0020_0000,
+            remainingMappedByteCount: UInt(name.utf8.count + 1)
+        )
+        var lookupCount = 0
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return nil
+            },
+            cacheLocations: [
+                (external.pointer, protocolLocation),
+                (external.namePointer, nameLocation)
+            ]
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 0)
+        XCTAssertEqual(result.nameReferences.map(\.name), [name])
+        XCTAssertEqual(result.nameReferences.first?.identity, protocolLocation.identity)
+        XCTAssertTrue(result.failures.isEmpty)
+
+        guard case .success(let fullResult) = list.readProtocols(in: fixture.machO) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertTrue(fullResult.nameReferences.isEmpty)
+        XCTAssertEqual(
+            fullResult.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
+    }
+
+    func testCanonicalCacheProtocolNeedsOnlyMandatoryLayoutPrefix() throws {
+#if canImport(Darwin)
+        let pageSize = Int(getpagesize())
+        let mappingByteCount = pageSize * 2
+        let mapping = mmap(
+            nil,
+            mappingByteCount,
+            PROT_READ | PROT_WRITE,
+            MAP_ANON | MAP_PRIVATE,
+            -1,
+            0
+        )
+        guard mapping != MAP_FAILED, let mapping else {
+            return XCTFail("Failed to allocate the protocol mapping")
+        }
+        defer { munmap(mapping, mappingByteCount) }
+        XCTAssertEqual(mprotect(mapping.advanced(by: pageSize), pageSize, PROT_NONE), 0)
+
+        let name = "ShortCanonicalCacheProtocol"
+        let nameBytes = Array(name.utf8) + [0]
+        nameBytes.withUnsafeBytes {
+            mapping.copyMemory(from: $0.baseAddress!, byteCount: $0.count)
+        }
+        typealias RuntimeLayout = ObjCProtocolRuntimeLayoutPrefix<UInt64>
+        let mandatoryLayoutByteCount = MemoryLayout<RuntimeLayout>.size
+        let protocolPointer = mapping.advanced(
+            by: pageSize - mandatoryLayoutByteCount
+        )
+        protocolPointer.storeUnaligned(
+            RuntimeLayout(
+                isa: 0,
+                mangledName: UInt64(UInt(bitPattern: mapping)),
+                protocols: 0,
+                instanceMethods: 0,
+                classMethods: 0,
+                optionalInstanceMethods: 0,
+                optionalClassMethods: 0,
+                instanceProperties: 0,
+                size: UInt32(mandatoryLayoutByteCount),
+                flags: ObjCProtocolRuntimeFlags.canonical
+                    | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+            )
+        )
+
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: protocolPointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let cacheUUID = UUID()
+        let protocolLocation = ObjCProtocolDyldCacheLocation(
+            cacheUUID: cacheUUID,
+            unslidAddress: 0x1800_0010_0000,
+            remainingMappedByteCount: UInt(mandatoryLayoutByteCount)
+        )
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                XCTFail("Canonical cache recovery must bypass name lookup")
+                return nil
+            },
+            cacheLocations: [
+                (UnsafeRawPointer(protocolPointer), protocolLocation),
+                (
+                    UnsafeRawPointer(mapping),
+                    .init(
+                        cacheUUID: cacheUUID,
+                        unslidAddress: 0x1800_0020_0000,
+                        remainingMappedByteCount: UInt(nameBytes.count)
+                    )
+                )
+            ]
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(result.nameReferences.map(\.name), [name])
+        XCTAssertEqual(result.nameReferences.first?.identity, protocolLocation.identity)
+        XCTAssertTrue(result.failures.isEmpty)
+#endif
+    }
+
+    func testForgedCanonicalProtocolOutsideCacheFallsBackAndFails() throws {
+        let external = SyntheticExternalProtocolFixture(
+            name: "ForgedCanonicalProtocol",
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        var lookupCount = 0
+        let resolver = ObjCProtocolRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return nil
+            }
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 1)
+        XCTAssertTrue(result.nameReferences.isEmpty)
+        XCTAssertEqual(
+            result.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
+    }
+
+    func testCanonicalProtocolWithWrongFixedMaskFallsBackToNameLookup() throws {
+        let name = "WrongFixedMaskProtocol"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical | (1 << 31)
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let cacheUUID = UUID()
+        let fallbackPointer = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x3_0000))
+        var lookedUpNames: [String] = []
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { rawName in
+                lookedUpNames.append(rawName)
+                return fallbackPointer
+            },
+            cacheLocations: syntheticCacheLocations(
+                for: external,
+                cacheUUID: cacheUUID,
+                nameByteCount: name.utf8.count + 1
+            )
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookedUpNames, [name])
+        XCTAssertEqual(
+            result.nameReferences.first?.identity,
+            .image(address: UInt(bitPattern: fallbackPointer))
+        )
+        XCTAssertTrue(result.failures.isEmpty)
+    }
+
+    func testCanonicalProtocolRequiresActiveRuntimePreoptimization() throws {
+        let name = "DisabledPreoptimizationProtocol"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let fallbackPointer = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x4_0000))
+        var lookupCount = 0
+        let locations = syntheticCacheLocations(
+            for: external,
+            cacheUUID: UUID(),
+            nameByteCount: name.utf8.count + 1
+        )
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return fallbackPointer
+            },
+            cacheLocations: locations,
+            usesSharedCacheProtocolOptimizations: false
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 1)
+        XCTAssertEqual(
+            result.nameReferences.first?.identity,
+            .image(address: UInt(bitPattern: fallbackPointer))
+        )
+        XCTAssertTrue(result.failures.isEmpty)
+    }
+
+    func testCanonicalProtocolWithSmallDeclaredLayoutFailsBeforeNameLookup() throws {
+        let minimumLayoutSize = ObjCProtocolRuntimeFlags.mandatoryLayoutByteCount(
+            for: UInt64.self
+        )
+        let name = "SmallCanonicalProtocol"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            declaredSize: UInt32(minimumLayoutSize - 1),
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        var lookupCount = 0
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return nil
+            },
+            cacheLocations: syntheticCacheLocations(
+                for: external,
+                cacheUUID: UUID(),
+                nameByteCount: name.utf8.count + 1
+            )
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 0)
+        XCTAssertTrue(result.nameReferences.isEmpty)
+        XCTAssertEqual(
+            result.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
+    }
+
+    func testCanonicalProtocolPrefixCannotCrossCacheMappingBoundary() throws {
+        let name = "BoundaryCanonicalProtocolLayout"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let mandatoryLayoutByteCount = ObjCProtocolRuntimeFlags.mandatoryLayoutByteCount(
+            for: UInt64.self
+        )
+        let cacheUUID = UUID()
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in nil },
+            cacheLocations: [
+                (
+                    external.pointer,
+                    .init(
+                        cacheUUID: cacheUUID,
+                        unslidAddress: 0x1800_0010_0000,
+                        remainingMappedByteCount: UInt(mandatoryLayoutByteCount - 1)
+                    )
+                ),
+                (
+                    external.namePointer,
+                    .init(
+                        cacheUUID: cacheUUID,
+                        unslidAddress: 0x1800_0020_0000,
+                        remainingMappedByteCount: UInt(name.utf8.count + 1)
+                    )
+                )
+            ]
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertTrue(result.nameReferences.isEmpty)
+        XCTAssertEqual(
+            result.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
+    }
+
+    func testCanonicalProtocolAllowsLowerSwiftFlagBits() throws {
+        let name = "CanonicalSwiftProtocol"
+        let swiftFlagBits: UInt32 = 0x0000_12A5
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+                | swiftFlagBits
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        var lookupCount = 0
+        let locations = syntheticCacheLocations(
+            for: external,
+            cacheUUID: UUID(),
+            nameByteCount: name.utf8.count + 1
+        )
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return nil
+            },
+            cacheLocations: locations
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 0)
+        XCTAssertEqual(result.nameReferences.map(\.name), [name])
+        XCTAssertEqual(result.nameReferences.first?.identity, locations[0].1.identity)
+        XCTAssertTrue(result.failures.isEmpty)
+    }
+
+    func testCanonicalProtocolNameCannotCrossCacheMappingBoundary() throws {
+        let name = "BoundaryCanonicalProtocol"
+        let external = SyntheticExternalProtocolFixture(
+            name: name,
+            flags: ObjCProtocolRuntimeFlags.canonical
+                | ObjCProtocolRuntimeFlags.preoptimizedFixedValue
+        )
+        let fixture = SyntheticImageFixture(
+            nodes: [
+                .init(
+                    name: "Owner",
+                    children: [.pointer(UInt64(UInt(bitPattern: external.pointer)))]
+                )
+            ]
+        )
+        let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
+        let cacheUUID = UUID()
+        let protocolLocation = ObjCProtocolDyldCacheLocation(
+            cacheUUID: cacheUUID,
+            unslidAddress: 0x1800_0010_0000,
+            remainingMappedByteCount: UInt(MemoryLayout<ObjCProtocol64.Layout>.size)
+        )
+        let truncatedNameLocation = ObjCProtocolDyldCacheLocation(
+            cacheUUID: cacheUUID,
+            unslidAddress: 0x1800_0020_0000,
+            remainingMappedByteCount: UInt(name.utf8.count)
+        )
+        var lookupCount = 0
+        let resolver = syntheticRuntimeResolver(
+            protocolAddress: { _ in
+                lookupCount += 1
+                return nil
+            },
+            cacheLocations: [
+                (external.pointer, protocolLocation),
+                (external.namePointer, truncatedNameLocation)
+            ]
+        )
+
+        guard case .success(let result) = list.readProtocols(
+            in: fixture.machO,
+            runtimeResolver: resolver
+        ) else {
+            return XCTFail("Expected a readable protocol pointer table")
+        }
+        XCTAssertEqual(lookupCount, 0)
+        XCTAssertTrue(result.nameReferences.isEmpty)
+        XCTAssertEqual(
+            result.failures,
+            [.init(index: 0, reason: .missingBackingData)]
+        )
     }
 
     func testUnknownRawProtocolNameKeepsMissingBackingDiagnostic() throws {
@@ -342,7 +840,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         let canonicalPointer = try XCTUnwrap(UnsafeRawPointer(bitPattern: 0x2_0000))
         XCTAssertNotEqual(external.pointer, canonicalPointer)
         var lookedUpNames: [String] = []
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { name in
                 lookedUpNames.append(name)
                 return name == rawName ? canonicalPointer : nil
@@ -351,7 +849,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -379,7 +877,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         )
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
         var lookupCount = 0
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { _ in
                 lookupCount += 1
                 return UnsafeRawPointer(bitPattern: 0x2_0000)
@@ -388,7 +886,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -415,13 +913,13 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             ]
         )
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { _ in UnsafeRawPointer(bitPattern: 0x2_0000) }
         )
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -446,13 +944,13 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             ]
         )
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { _ in UnsafeRawPointer(bitPattern: 0x2_0000) }
         )
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -474,7 +972,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         )
         let list = try XCTUnwrap(fixture.protocols[0].protocolList(in: fixture.machO))
         var lookupCount = 0
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { _ in
                 lookupCount += 1
                 return UnsafeRawPointer(bitPattern: 0x2_0000)
@@ -483,7 +981,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -508,7 +1006,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         let pointer = try XCTUnwrap(UnsafeRawPointer(bitPattern: unreadableAddress))
         XCTAssertNil(fixture.machO.resolveImage(containing: pointer))
         var lookupCount = 0
-        let resolver = RegisteredObjCProtocolNameResolver(
+        let resolver = ObjCProtocolRuntimeResolver(
             protocolAddress: { _ in
                 lookupCount += 1
                 return UnsafeRawPointer(bitPattern: 0x2_0000)
@@ -517,7 +1015,7 @@ final class ObjCProtocolSafetyTests: XCTestCase {
 
         guard case .success(let result) = list.readProtocols(
             in: fixture.machO,
-            registeredProtocolNames: resolver
+            runtimeResolver: resolver
         ) else {
             return XCTFail("Expected a readable protocol pointer table")
         }
@@ -527,7 +1025,10 @@ final class ObjCProtocolSafetyTests: XCTestCase {
             return XCTFail("Expected a typed unreadable-layout failure")
         }
         XCTAssertEqual(address, unreadableAddress)
-        XCTAssertEqual(byteCount, MemoryLayout<ObjCProtocol64.Layout>.size)
+        XCTAssertEqual(
+            byteCount,
+            ObjCProtocolRuntimeFlags.mandatoryLayoutByteCount(for: UInt64.self)
+        )
     }
 
     func testReadableUnalignedHeadersAndProtocolLayoutAreLoadedSafely() throws {
@@ -1249,6 +1750,50 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertEqual(context.diagnostics.count, 1)
     }
 
+    private func syntheticCacheLocations(
+        for fixture: SyntheticExternalProtocolFixture,
+        cacheUUID: UUID,
+        nameByteCount: Int
+    ) -> [(UnsafeRawPointer, ObjCProtocolDyldCacheLocation)] {
+        [
+            (
+                fixture.pointer,
+                .init(
+                    cacheUUID: cacheUUID,
+                    unslidAddress: 0x1800_0010_0000,
+                    remainingMappedByteCount: UInt(MemoryLayout<ObjCProtocol64.Layout>.size)
+                )
+            ),
+            (
+                fixture.namePointer,
+                .init(
+                    cacheUUID: cacheUUID,
+                    unslidAddress: 0x1800_0020_0000,
+                    remainingMappedByteCount: UInt(nameByteCount)
+                )
+            )
+        ]
+    }
+
+    private func syntheticRuntimeResolver(
+        protocolAddress: @escaping (String) -> UnsafeRawPointer?,
+        cacheLocations: [(UnsafeRawPointer, ObjCProtocolDyldCacheLocation)],
+        usesSharedCacheProtocolOptimizations: Bool = true
+    ) -> ObjCProtocolRuntimeResolver {
+        let locationsByAddress = Dictionary(
+            uniqueKeysWithValues: cacheLocations.map {
+                (UInt(bitPattern: $0.0), $0.1)
+            }
+        )
+        return .init(
+            protocolAddress: protocolAddress,
+            activeDyldCacheLocation: {
+                locationsByAddress[UInt(bitPattern: $0)]
+            },
+            usesSharedCacheProtocolOptimizations: usesSharedCacheProtocolOptimizations
+        )
+    }
+
     private func assertTableFailure<Source, Protocol>(
         _ outcome: ObjCProtocolListReadOutcome<Source, Protocol>,
         matches: (ObjCProtocolListTableFailure) -> Bool,
@@ -1528,13 +2073,27 @@ private enum SyntheticGraph {
 
 private final class SyntheticExternalProtocolFixture {
     let pointer: UnsafeRawPointer
+    let namePointer: UnsafeRawPointer
     private let storage: UnsafeMutableRawPointer
 
-    convenience init(name: String) {
-        self.init(nameBytes: Array(name.utf8) + [0])
+    convenience init(
+        name: String,
+        declaredSize: UInt32? = nil,
+        flags: UInt32 = 0
+    ) {
+        self.init(
+            nameBytes: Array(name.utf8) + [0],
+            declaredSize: declaredSize,
+            flags: flags
+        )
     }
 
-    init(nameBytes: [UInt8], namePointerOverride: UInt64? = nil) {
+    init(
+        nameBytes: [UInt8],
+        namePointerOverride: UInt64? = nil,
+        declaredSize: UInt32? = nil,
+        flags: UInt32 = 0
+    ) {
         let layoutSize = MemoryLayout<ObjCProtocol64.Layout>.size
         let payloadByteCount = max(nameBytes.count, 1)
         let storage = UnsafeMutableRawPointer.allocate(
@@ -1550,6 +2109,7 @@ private final class SyntheticExternalProtocolFixture {
         )
 
         let namePointer = storage.advanced(by: layoutSize)
+        self.namePointer = UnsafeRawPointer(namePointer)
         if !nameBytes.isEmpty {
             nameBytes.withUnsafeBytes { bytes in
                 namePointer.copyMemory(from: bytes.baseAddress!, byteCount: bytes.count)
@@ -1564,8 +2124,8 @@ private final class SyntheticExternalProtocolFixture {
             optionalInstanceMethods: 0,
             optionalClassMethods: 0,
             instanceProperties: 0,
-            size: UInt32(layoutSize),
-            flags: 0,
+            size: declaredSize ?? UInt32(layoutSize),
+            flags: flags,
             _extendedMethodTypes: 0,
             _demangledName: 0,
             _classProperties: 0

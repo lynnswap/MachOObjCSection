@@ -26,6 +26,11 @@ internal enum ObjCProtocolReadLimits {
     /// bypassing the entry-count budget.
     static let maximumTableByteCount = 512 * 1_024
 
+    /// Runtime-only names referenced by one protocol table share a separate
+    /// scan budget so many individually bounded malformed strings cannot
+    /// multiply into unbounded work.
+    static let maximumRuntimeNameTableByteCount = 16 * 1_024 * 1_024
+
     static func checkedTableByteCount(
         count: Int,
         stride: Int
@@ -45,6 +50,94 @@ internal enum ObjCProtocolReadLimits {
             )
         }
         return .success(byteCount)
+    }
+}
+
+internal struct ObjCProtocolRuntimeNameReader {
+    private enum CachedName {
+        case value(String)
+        case invalid
+    }
+
+    private var namesByAddress: [UInt: CachedName] = [:]
+    private(set) var remainingByteCount: Int
+    private let read: (UnsafeRawPointer, Int) -> String?
+
+    init(
+        maximumTableByteCount: Int = ObjCProtocolReadLimits.maximumRuntimeNameTableByteCount,
+        read: @escaping (UnsafeRawPointer, Int) -> String? = {
+            readBoundedNullTerminatedUTF8(at: $0, maximumByteCount: $1)
+        }
+    ) {
+        self.remainingByteCount = max(0, maximumTableByteCount)
+        self.read = read
+    }
+
+    mutating func name(
+        at pointer: UnsafeRawPointer,
+        maximumByteCount: Int
+    ) -> String? {
+        let address = UInt(bitPattern: pointer)
+        if let cached = namesByAddress[address] {
+            switch cached {
+            case .value(let name): return name
+            case .invalid: return nil
+            }
+        }
+
+        let allowedByteCount = min(max(0, maximumByteCount), remainingByteCount)
+        guard allowedByteCount > 0 else {
+            namesByAddress[address] = .invalid
+            return nil
+        }
+
+        guard let name = read(pointer, allowedByteCount), !name.isEmpty else {
+            remainingByteCount -= allowedByteCount
+            namesByAddress[address] = .invalid
+            return nil
+        }
+        let (consumedByteCount, overflow) = name.utf8.count.addingReportingOverflow(1)
+        guard !overflow, consumedByteCount <= allowedByteCount else {
+            remainingByteCount -= allowedByteCount
+            namesByAddress[address] = .invalid
+            return nil
+        }
+
+        remainingByteCount -= consumedByteCount
+        namesByAddress[address] = .value(name)
+        return name
+    }
+}
+
+internal struct ObjCProtocolRuntimeLayoutPrefix<Pointer: FixedWidthInteger> {
+    let isa: Pointer
+    let mangledName: Pointer
+    let protocols: Pointer
+    let instanceMethods: Pointer
+    let classMethods: Pointer
+    let optionalInstanceMethods: Pointer
+    let optionalClassMethods: Pointer
+    let instanceProperties: Pointer
+    let size: UInt32
+    let flags: UInt32
+}
+
+internal enum ObjCProtocolRuntimeFlags {
+    // objc4 owns the upper runtime bits. Compare only its canonical/fixed masks:
+    // lower bits carry Swift protocol metadata and must not affect remapping.
+    static let canonical: UInt32 = 1 << 29
+    static let fixedMask: UInt32 = (1 << 30) | (1 << 31)
+    static let preoptimizedFixedValue: UInt32 = 1 << 30
+
+    static func isPreoptimizedCanonical(_ flags: UInt32) -> Bool {
+        flags & canonical != 0
+            && flags & fixedMask == preoptimizedFixedValue
+    }
+
+    static func mandatoryLayoutByteCount<Pointer>(
+        for _: Pointer.Type
+    ) -> Int where Pointer: FixedWidthInteger {
+        MemoryLayout<ObjCProtocolRuntimeLayoutPrefix<Pointer>>.size
     }
 }
 
@@ -400,7 +493,7 @@ extension ObjCProtocolListProtocol {
 
     internal func readProtocols(
         in machO: MachOImage,
-        registeredProtocolNames: RegisteredObjCProtocolNameResolver? = nil
+        runtimeResolver: ObjCProtocolRuntimeResolver? = nil
     ) -> ObjCProtocolListReadOutcome<MachOImage, ObjCProtocol> {
         guard !isListOfLists else {
             return .failure(.unsupportedListEncoding)
@@ -452,6 +545,7 @@ extension ObjCProtocolListProtocol {
 
         var entries: [ObjCProtocolListReadEntry<MachOImage, ObjCProtocol>] = []
         entries.reserveCapacity(count)
+        var runtimeNameReader = ObjCProtocolRuntimeNameReader()
 
         for (index, pointer) in pointers.enumerated() {
             guard let rawValue = UInt64(exactly: pointer) else {
@@ -465,21 +559,6 @@ extension ObjCProtocolListProtocol {
                 continue
             }
 
-            let layoutSize = MemoryLayout<ObjCProtocol.Layout>.size
-            guard isPointerSafelyReadable(protocolPointer, length: layoutSize) else {
-                entries.append(
-                    .failure(.init(
-                        index: index,
-                        reason: .unreadableImageLayout(
-                            address: strippedAddress,
-                            byteCount: layoutSize
-                        )
-                    ))
-                )
-                continue
-            }
-
-            let layout = protocolPointer.loadUnaligned(as: ObjCProtocol.Layout.self)
             let targetMachO: MachOImage?
             if machO.contains(ptr: protocolPointer) {
                 targetMachO = machO
@@ -488,16 +567,78 @@ extension ObjCProtocolListProtocol {
             }
 
             if targetMachO == nil {
-                // dyld canonical protocols live in cache-wide __OBJC_RW storage,
-                // outside every Mach-O image. objc4 remaps a raw protocol object by
-                // its mangled name, so the runtime name lookup is the admission owner.
-                guard let registeredProtocolNames,
+                guard let runtimeResolver else {
+                    entries.append(.failure(.init(index: index, reason: .missingBackingData)))
+                    continue
+                }
+                typealias RuntimeLayout = ObjCProtocolRuntimeLayoutPrefix<ObjCProtocol.Layout.Pointer>
+                let mandatoryLayoutByteCount = MemoryLayout<RuntimeLayout>.size
+                guard isPointerSafelyReadable(
+                    protocolPointer,
+                    length: mandatoryLayoutByteCount
+                ) else {
+                    entries.append(
+                        .failure(.init(
+                            index: index,
+                            reason: .unreadableImageLayout(
+                                address: strippedAddress,
+                                byteCount: mandatoryLayoutByteCount
+                            )
+                        ))
+                    )
+                    continue
+                }
+
+                let layout = protocolPointer.loadUnaligned(as: RuntimeLayout.self)
+                guard UInt64(layout.size) >= UInt64(mandatoryLayoutByteCount),
                       let rawNameAddress64 = UInt64(exactly: layout.mangledName),
                       let rawNameAddress = UInt(exactly: machO.stripPointerTags(of: rawNameAddress64)),
-                      let rawNamePointer = UnsafeRawPointer(bitPattern: rawNameAddress),
-                      let rawName = readBoundedNullTerminatedUTF8(at: rawNamePointer),
-                      !rawName.isEmpty,
-                      let canonicalProtocolPointer = registeredProtocolNames.protocolAddress(rawName) else {
+                      let rawNamePointer = UnsafeRawPointer(bitPattern: rawNameAddress) else {
+                    entries.append(.failure(.init(index: index, reason: .missingBackingData)))
+                    continue
+                }
+
+                let protocolCacheLocation = runtimeResolver.activeDyldCacheLocation(
+                    protocolPointer
+                )
+                let nameCacheLocation = runtimeResolver.activeDyldCacheLocation(
+                    rawNamePointer
+                )
+                let maximumNameByteCount = nameCacheLocation.map {
+                    min(
+                        BoundedCStringReadLimits.maximumByteCount,
+                        Int(clamping: $0.remainingMappedByteCount)
+                    )
+                } ?? BoundedCStringReadLimits.maximumByteCount
+                guard let rawName = runtimeNameReader.name(
+                    at: rawNamePointer,
+                    maximumByteCount: maximumNameByteCount
+                ), !rawName.isEmpty else {
+                    entries.append(.failure(.init(index: index, reason: .missingBackingData)))
+                    continue
+                }
+
+                // Do not gate this path on objc_getProtocol: objc4 returns a
+                // cache-owned canonical object before its name lookup, and a
+                // private protocol may be absent from the global registry.
+                if let protocolCacheLocation,
+                   nameCacheLocation != nil,
+                   runtimeResolver.usesSharedCacheProtocolOptimizations,
+                   protocolCacheLocation.remainingMappedByteCount
+                    >= UInt(mandatoryLayoutByteCount),
+                   ObjCProtocolRuntimeFlags.isPreoptimizedCanonical(layout.flags) {
+                    entries.append(
+                        .nameReference(.init(
+                            index: index,
+                            name: rawName,
+                            identity: protocolCacheLocation.identity
+                        ))
+                    )
+                    continue
+                }
+
+                // Noncanonical raw aliases follow objc4's name-based remap path.
+                guard let canonicalProtocolPointer = runtimeResolver.protocolAddress(rawName) else {
                     entries.append(.failure(.init(index: index, reason: .missingBackingData)))
                     continue
                 }
@@ -515,6 +656,20 @@ extension ObjCProtocolListProtocol {
                 entries.append(.failure(.init(index: index, reason: .missingBackingData)))
                 continue
             }
+            let layoutSize = MemoryLayout<ObjCProtocol.Layout>.size
+            guard isPointerSafelyReadable(protocolPointer, length: layoutSize) else {
+                entries.append(
+                    .failure(.init(
+                        index: index,
+                        reason: .unreadableImageLayout(
+                            address: strippedAddress,
+                            byteCount: layoutSize
+                        )
+                    ))
+                )
+                continue
+            }
+            let layout = protocolPointer.loadUnaligned(as: ObjCProtocol.Layout.self)
             guard let protocolOffset = signedDisplacement(
                 from: UInt(bitPattern: targetMachO.ptr),
                 to: strippedAddress

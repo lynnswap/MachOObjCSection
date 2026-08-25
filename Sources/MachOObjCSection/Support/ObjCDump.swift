@@ -552,16 +552,16 @@ extension ObjCProtocolListProtocol {
         options: ObjCProtocolInfoOptions,
         context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        let registeredProtocolNames: RegisteredObjCProtocolNameResolver?
+        let runtimeResolver: ObjCProtocolRuntimeResolver?
         switch options.referencedProtocolInfo {
         case .full:
-            registeredProtocolNames = nil
+            runtimeResolver = nil
         case .nameOnly:
-            registeredProtocolNames = .runtime
+            runtimeResolver = .runtime
         }
         switch readProtocols(
             in: machO,
-            registeredProtocolNames: registeredProtocolNames
+            runtimeResolver: runtimeResolver
         ) {
         case .failure(let failure):
             context.record(tableFailure: failure, listOffset: offset)
