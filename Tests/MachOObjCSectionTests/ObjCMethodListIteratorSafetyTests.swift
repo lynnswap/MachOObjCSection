@@ -119,11 +119,31 @@ final class ObjCMethodListIteratorSafetyTests: XCTestCase {
             layout: .init(entsizeAndFlags: UInt32.max, count: 0)
         )
         XCTAssertEqual(ObjCPropertyList.size(for: empty), MemoryLayout<EntrySizeListHeader>.size)
+        XCTAssertEqual(
+            ObjCPropertyList.checkedSize(for: empty),
+            MemoryLayout<EntrySizeListHeader>.size
+        )
 
         let excessive = EntrySizeListHeader(
             layout: .init(entsizeAndFlags: UInt32.max, count: UInt32.max)
         )
-        XCTAssertNil(ObjCPropertyList.size(for: excessive))
+        XCTAssertEqual(ObjCPropertyList.size(for: excessive), 0)
+        XCTAssertNil(ObjCPropertyList.checkedSize(for: excessive))
+
+        let list = ObjCPropertyList(offset: 0, header: excessive, is64Bit: true)
+        let staticSize: Int = ObjCPropertyList.size(for: excessive)
+        let instanceSize: Int = list.size
+        let entrySize: Int = list.entrySize
+        let count: Int = list.count
+        XCTAssertEqual(staticSize, 0)
+        XCTAssertEqual(instanceSize, 0)
+#if arch(arm64_32) || arch(arm) || arch(i386)
+        XCTAssertEqual(entrySize, 0)
+        XCTAssertEqual(count, 0)
+#else
+        XCTAssertEqual(entrySize, Int(UInt32.max))
+        XCTAssertEqual(count, Int(UInt32.max))
+#endif
     }
 
     private func listsData(

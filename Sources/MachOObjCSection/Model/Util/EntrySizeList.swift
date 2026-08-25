@@ -31,18 +31,29 @@ public protocol EntrySizeListProtocol {
 
 extension EntrySizeListProtocol {
     public var entrySize: Int {
-        numericCast(header.entsizeAndFlags & ~Self.flagMask)
+        Int(exactly: header.entsizeAndFlags & ~Self.flagMask) ?? 0
     }
 
     public var _flags: UInt32 {
         numericCast(header.entsizeAndFlags & Self.flagMask)
     }
 
-    public var count: Int { numericCast(header.count) }
+    public var count: Int { Int(exactly: header.count) ?? 0 }
 }
 
 extension EntrySizeListProtocol {
-    public static func size(for header: Header) -> Int? {
+    /// Returns zero when a legacy caller asks for the size of malformed or
+    /// over-budget external metadata. Checked decoders use `checkedSize`
+    /// directly and preserve the typed failure instead of this projection.
+    public static func size(for header: Header) -> Int {
+        checkedSize(for: header) ?? 0
+    }
+
+    public var size: Int {
+        Self.size(for: header)
+    }
+
+    internal static func checkedSize(for header: Header) -> Int? {
         let count: Int
         switch ObjCMetadataTableReader.exactCount(UInt64(header.count)) {
         case .success(let value): count = value
@@ -65,10 +76,6 @@ extension EntrySizeListProtocol {
         }
         let (size, overflow) = Header.layoutSize.addingReportingOverflow(byteCount)
         return overflow ? nil : size
-    }
-
-    public var size: Int? {
-        Self.size(for: header)
     }
 
     internal static func checkedSize(
