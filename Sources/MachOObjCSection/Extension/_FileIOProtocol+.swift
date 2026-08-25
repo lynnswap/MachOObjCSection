@@ -133,7 +133,6 @@ extension _FileIOProtocol {
             bytes.loadUnaligned(as: layoutType)
         }
     }
-
 }
 
 extension _FileIOProtocol {

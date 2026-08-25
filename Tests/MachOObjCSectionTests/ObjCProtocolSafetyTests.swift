@@ -1750,6 +1750,111 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         XCTAssertEqual(context.diagnostics.count, 1)
     }
 
+    func testClassRODataRejectsTruncated32And64BitLayouts() throws {
+        let fixture64 = try SyntheticFileFixture(nodes: [])
+        let truncatedAddress64 = SyntheticGraph.fileVMAddress
+            + UInt64(SyntheticGraph.fileSize - 1)
+        let class64 = ObjCClass64(
+            layout: .init(
+                isa: 0,
+                superclass: 0,
+                methodCacheBuckets: 0,
+                methodCacheProperties: 0,
+                dataVMAddrAndFastFlags: truncatedAddress64,
+                swiftClassFlags: 0
+            ),
+            offset: SyntheticGraph.classOffset
+        )
+        XCTAssertNil(class64.classROData(in: fixture64.machO))
+
+        let fixture32 = try Synthetic32FileFixture()
+        let truncatedAddress32 = UInt32(0x1000_0000 + 0x1000 - 1)
+        let class32 = ObjCClass32(
+            layout: .init(
+                isa: 0,
+                superclass: 0,
+                methodCacheBuckets: 0,
+                methodCacheProperties: 0,
+                dataVMAddrAndFastFlags: truncatedAddress32,
+                swiftClassFlags: 0
+            ),
+            offset: 0x400
+        )
+        XCTAssertNil(class32.classROData(in: fixture32.machO))
+    }
+
+    func testFileIvarOffsetsRejectTruncated32And64BitStorage() throws {
+        let fixture64 = try SyntheticFileFixture(nodes: [])
+        let ivar64 = ObjCIvar64(
+            layout: .init(
+                offset: SyntheticGraph.fileVMAddress + UInt64(SyntheticGraph.fileSize - 1),
+                name: 0,
+                type: 0,
+                alignment: 0,
+                size: 0
+            ),
+            offset: 0x900
+        )
+        XCTAssertNil(ivar64.offset(in: fixture64.machO))
+
+        let fixture32 = try Synthetic32FileFixture()
+        let ivar32 = ObjCIvar32(
+            layout: .init(
+                offset: UInt32(0x1000_0000 + 0x1000 - 1),
+                name: 0,
+                type: 0,
+                alignment: 0,
+                size: 0
+            ),
+            offset: 0x400
+        )
+        XCTAssertNil(ivar32.offset(in: fixture32.machO))
+    }
+
+    func testLoadedIvarOffsetChecksReadabilityBeforeLoading() {
+        let fixture = SyntheticImageFixture(nodes: [])
+        let invalid64 = ObjCIvar64(
+            layout: .init(
+                offset: 1,
+                name: 0,
+                type: 0,
+                alignment: 0,
+                size: 0
+            ),
+            offset: 0
+        )
+        let invalid32 = ObjCIvar32(
+            layout: .init(
+                offset: 1,
+                name: 0,
+                type: 0,
+                alignment: 0,
+                size: 0
+            ),
+            offset: 0
+        )
+        XCTAssertNil(invalid64.offset(in: fixture.machO))
+        XCTAssertNil(invalid32.offset(in: fixture.machO))
+
+        let storage = UnsafeMutablePointer<UInt32>.allocate(capacity: 1)
+        storage.initialize(to: 0x1234_5678)
+        defer {
+            storage.deinitialize(count: 1)
+            storage.deallocate()
+        }
+        let valid = ObjCIvar64(
+            layout: .init(
+                offset: UInt64(UInt(bitPattern: storage)),
+                name: 0,
+                type: 0,
+                alignment: 0,
+                size: 0
+            ),
+            offset: 0
+        )
+        XCTAssertEqual(valid.offset(in: fixture.machO), 0x1234_5678)
+    }
+
     private func syntheticCacheLocations(
         for fixture: SyntheticExternalProtocolFixture,
         cacheUUID: UUID,
