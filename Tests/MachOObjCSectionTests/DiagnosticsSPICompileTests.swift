@@ -32,3 +32,54 @@ private func consumeMemberListDiagnostics<Class: ObjCClassProtocol>(
     objcClass.readInfo(in: file).memberListDiagnostics
         + objcClass.readInfo(in: image).memberListDiagnostics
 }
+
+private func consumeFieldDiagnostics<Class: ObjCClassProtocol>(
+    objcClass: Class,
+    file: MachOFile,
+    image: MachOImage
+) -> [ObjCMetadataFieldDiagnostic] {
+    objcClass.readInfo(in: file).fieldDiagnostics
+        + objcClass.readInfo(in: image).fieldDiagnostics
+}
+
+private func inspectFieldDiagnostic(
+    _ diagnostic: ObjCMetadataFieldDiagnostic
+) -> Int {
+    let subject: ObjCMetadataFieldDiagnostic.Subject
+    let failure: ObjCMetadataFieldDiagnostic.Failure
+    let index: Int
+    switch diagnostic {
+    case .classROData(let details):
+        subject = details.subject
+        failure = details.failure
+        index = details.classObjectOffset
+        switch details.role {
+        case .instance, .metaclass:
+            break
+        }
+    case .ivarOffset(let details):
+        subject = details.subject
+        failure = details.failure
+        index = details.index
+        _ = details.name
+    }
+
+    switch subject {
+    case .namedClass(let name, let objectOffset):
+        _ = name
+        _ = objectOffset
+    case .classObject(let offset):
+        _ = offset
+    }
+    switch failure {
+    case .unresolvedRebase, .missingBackingData:
+        break
+    case .unreadableFileRange(let offset, let byteCount):
+        _ = offset
+        _ = byteCount
+    case .unreadableImageRange(let address, let byteCount):
+        _ = address
+        _ = byteCount
+    }
+    return index
+}
