@@ -142,15 +142,16 @@ extension RelativeListListProtocol {
         (count: Int, stride: Int),
         ObjCRelativeListFailure
     > {
-        guard let count = Int(exactly: header.count) else {
+        let rawCount = UInt64(header.layout.count)
+        guard let count = Int(exactly: rawCount) else {
             return .failure(
                 .table(
                     outerListOffset: offset,
-                    reason: .invalidElementCount(UInt64(header.count))
+                    reason: .invalidElementCount(rawCount)
                 )
             )
         }
-        let rawStride = header.entsizeAndFlags & ~Self.flagMask
+        let rawStride = header.layout.entsizeAndFlags & ~Self.flagMask
         guard let stride = Int(exactly: rawStride) else {
             return .failure(
                 .table(

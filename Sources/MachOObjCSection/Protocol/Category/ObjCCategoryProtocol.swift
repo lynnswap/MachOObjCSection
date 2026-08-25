@@ -495,7 +495,16 @@ extension ObjCCategoryProtocol {
         at pointer: Layout.Pointer,
         in machO: MachOImage
     ) -> ObjCLoadedImageRead<ObjCMethodList> {
-        guard pointer & 1 == 0 else { return .absent }
+        guard pointer != 0 else { return .absent }
+        guard pointer & 1 == 0 else {
+            return .failure(
+                provenance: ObjCLoadedImageReader.provenance(
+                    for: pointer & ~1,
+                    in: machO
+                ),
+                reason: .unsupportedListEncoding
+            )
+        }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: pointer,
             in: machO,
@@ -519,7 +528,16 @@ extension ObjCCategoryProtocol {
         at pointer: Layout.Pointer,
         in machO: MachOImage
     ) -> ObjCLoadedImageRead<ObjCPropertyList> {
-        guard pointer & 1 == 0 else { return .absent }
+        guard pointer != 0 else { return .absent }
+        guard pointer & 1 == 0 else {
+            return .failure(
+                provenance: ObjCLoadedImageReader.provenance(
+                    for: pointer & ~1,
+                    in: machO
+                ),
+                reason: .unsupportedListEncoding
+            )
+        }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: pointer,
             in: machO,

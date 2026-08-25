@@ -147,6 +147,15 @@ extension ObjCProtocolProtocol {
         in machO: MachOImage
     ) -> ObjCLoadedImageRead<ObjCMethodList> {
         let pointer = layout[keyPath: keyPath(of: field)]
+        guard pointer == 0 || pointer & 1 == 0 else {
+            return .failure(
+                provenance: ObjCLoadedImageReader.provenance(
+                    for: pointer & ~1,
+                    in: machO
+                ),
+                reason: .unsupportedListEncoding
+            )
+        }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: pointer,
             in: machO,
@@ -177,6 +186,15 @@ extension ObjCProtocolProtocol {
             }
         }
         let pointer = layout[keyPath: keyPath(of: field)]
+        guard pointer == 0 || pointer & 1 == 0 else {
+            return .failure(
+                provenance: ObjCLoadedImageReader.provenance(
+                    for: pointer & ~1,
+                    in: machO
+                ),
+                reason: .unsupportedListEncoding
+            )
+        }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: pointer,
             in: machO,

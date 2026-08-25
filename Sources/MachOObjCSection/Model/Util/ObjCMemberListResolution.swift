@@ -107,7 +107,10 @@ extension ObjCMemberRelativeListListProtocol {
         let (tableOffset, overflow) = location.fileOffset.addingReportingOverflow(
             UInt64(MemoryLayout<EntrySizeListHeader>.size)
         )
-        guard !overflow else {
+        let (logicalTableOffset, logicalOverflow) = listOffset.addingReportingOverflow(
+            MemoryLayout<EntrySizeListHeader>.size
+        )
+        guard !overflow, !logicalOverflow else {
             return .failure(
                 .rangeOverflow(
                     startOffset: location.fileOffset,

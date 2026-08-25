@@ -12,45 +12,44 @@ import Foundation
 /// them.
 @_spi(Diagnostics)
 public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
-    /// The metadata owner whose table or relationship was degraded.
-    public let subject: Subject
+    /// The semantic owner of the degraded metadata.
+    public let owner: Owner
 
-    /// The member kind, or `nil` for image-root and relationship reads.
-    public let kind: Kind?
-
-    /// The referenced loaded layout role, or `nil` for table reads.
-    public let relationshipRole: LoadedRelationshipRole?
-
-    /// Whether the failure applies to the complete table or one ordered entry.
-    public let location: Location
-
-    /// Source coordinates known at the point where the failure was detected.
-    public let provenance: Provenance
+    /// The exact table, entry, or relationship read site.
+    public let site: Site
 
     /// The precise structural failure.
     public let failure: Failure
 
     internal init(
-        subject: Subject,
-        kind: Kind? = nil,
-        relationshipRole: LoadedRelationshipRole? = nil,
-        location: Location,
-        provenance: Provenance,
+        owner: Owner,
+        site: Site,
         failure: Failure
     ) {
-        self.subject = subject
-        self.kind = kind
-        self.relationshipRole = relationshipRole
-        self.location = location
-        self.provenance = provenance
+        self.owner = owner
+        self.site = site
         self.failure = failure
     }
 
-    public enum Subject: Sendable, Equatable {
+    public enum MetadataSubject: Sendable, Equatable {
+        /// A named Objective-C class.
         case `class`(name: String)
+        /// A named Objective-C protocol.
         case `protocol`(name: String)
+        /// A named Objective-C category and its target class.
         case category(className: String, name: String)
+    }
+
+    public enum Owner: Sendable, Equatable {
+        /// One member table owned by a decoded metadata subject.
+        case member(subject: MetadataSubject, kind: MemberKind)
+        /// One root pointer section in the loaded image.
         case loadedImageRoot(section: LoadedImageRootSection, pointerWidth: PointerWidth)
+        /// One class layout reached through a loaded relationship pointer.
+        case loadedRelationship(
+            subject: MetadataSubject,
+            role: LoadedRelationshipRole
+        )
     }
 
     public enum LoadedImageRootSection: Sendable, Equatable {
@@ -74,7 +73,7 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case categoryStubClass
     }
 
-    public enum Kind: Sendable, Equatable {
+    public enum MemberKind: Sendable, Equatable {
         case ivar
         case instanceMethod
         case classMethod
@@ -84,9 +83,13 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case classProperty
     }
 
-    public enum Location: Sendable, Equatable {
-        case table
-        case entry(index: Int)
+    public enum Site: Sendable, Equatable {
+        /// A failure affecting the complete table.
+        case table(Provenance)
+        /// A recoverable failure of one ordered table entry.
+        case entry(index: Int, provenance: Provenance)
+        /// A failure while resolving one relationship pointer.
+        case relationship(Provenance)
     }
 
     /// Coordinates are optional independently: an image read normally has both a
@@ -125,6 +128,7 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case unreadableImageRange(address: UInt, byteCount: Int)
 
         case invalidSectionByteCount(byteCount: UInt64, pointerSize: Int)
+        case missingImageSlide
         case invalidSectionAddress(rawAddress: UInt64, slide: Int)
         case invalidPointer(rawValue: UInt64)
         case missingReferencedImage(address: UInt)

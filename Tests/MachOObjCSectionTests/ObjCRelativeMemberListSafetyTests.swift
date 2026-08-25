@@ -306,6 +306,111 @@ final class ObjCRelativeMemberListSafetyTests: XCTestCase {
         XCTAssertEqual(context.memberListDiagnostics.map(\.location), expectedLocations)
     }
 
+    func testLoadedSingularMethodAndPropertyResolutionMatchesPluralSafety() {
+        let methodFixture = SyntheticRelativeMemberImageFixture(kind: .method)
+        let methodEntries = methodFixture.methodRelative.entries(in: methodFixture.machO)
+        XCTAssertEqual(methodEntries.count, 4)
+
+        let goodMethod = methodFixture.methodRelative.resolveMemberList(
+            in: methodFixture.machO,
+            for: methodEntries[1],
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in methodFixture.machO }
+        )
+        guard case let .resolved(source, list) = goodMethod else {
+            return XCTFail("Expected the singular good method list")
+        }
+        XCTAssertEqual(list.methods(in: source).map(\.name), ["m1", "m2"])
+
+        let badMethod = methodFixture.methodRelative.resolveMemberList(
+            in: methodFixture.machO,
+            for: methodEntries[2],
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in methodFixture.machO }
+        )
+        guard case .failure = badMethod else {
+            return XCTFail("Singular resolution must reject the same malformed method list")
+        }
+        let unloadedMethod = methodFixture.methodRelative.resolveMemberList(
+            in: methodFixture.machO,
+            for: methodEntries[0],
+            imageLoadResolver: { _ in .unloaded },
+            imageResolver: { _ in
+                XCTFail("Unloaded entries must not resolve an image")
+                return methodFixture.machO
+            }
+        )
+        guard case .omitted = unloadedMethod else {
+            return XCTFail("An unloaded singular entry is normal omission")
+        }
+
+        let propertyFixture = SyntheticRelativeMemberImageFixture(kind: .property)
+        let propertyEntries = propertyFixture.propertyRelative.entries(in: propertyFixture.machO)
+        let goodProperty = propertyFixture.propertyRelative.resolveMemberList(
+            in: propertyFixture.machO,
+            for: propertyEntries[3],
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in propertyFixture.machO }
+        )
+        guard case let .resolved(source, list) = goodProperty else {
+            return XCTFail("Expected the singular good property list")
+        }
+        XCTAssertEqual(list.properties(in: source).map(\.name), ["p3"])
+        let badProperty = propertyFixture.propertyRelative.resolveMemberList(
+            in: propertyFixture.machO,
+            for: propertyEntries[2],
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in propertyFixture.machO }
+        )
+        guard case .failure = badProperty else {
+            return XCTFail("Singular resolution must reject the same malformed property list")
+        }
+    }
+
+    func testFileSingularMethodAndPropertyResolutionUsesFullTableValidation() throws {
+        let fixture = try SyntheticRelativeMemberFileFixture()
+        let methodEntry = try XCTUnwrap(fixture.methodRelative.entries(in: fixture.machO).first)
+        let propertyEntry = try XCTUnwrap(fixture.propertyRelative.entries(in: fixture.machO).first)
+
+        guard case .resolved = fixture.methodRelative.resolveMemberList(
+            in: fixture.machO,
+            for: methodEntry,
+            locationResolver: { _, entry in fixture.location(for: entry) }
+        ) else {
+            return XCTFail("Expected a valid singular file method list")
+        }
+        guard case .resolved = fixture.propertyRelative.resolveMemberList(
+            in: fixture.machO,
+            for: propertyEntry,
+            locationResolver: { _, entry in fixture.location(for: entry) }
+        ) else {
+            return XCTFail("Expected a valid singular file property list")
+        }
+
+        let entryOffset = 0x100
+        var truncatedLayout = RelativeListListEntry.Layout()
+        truncatedLayout.imageIndex = 0
+        truncatedLayout.listOffset = Int64(fixture.truncatedMethodListOffset - entryOffset)
+        let truncatedEntry = RelativeListListEntry(
+            offset: entryOffset,
+            layout: truncatedLayout
+        )
+        let truncated = fixture.methodRelative.resolveMemberList(
+            in: fixture.machO,
+            for: truncatedEntry,
+            locationResolver: { machO, _ in
+                .direct(
+                    in: machO,
+                    fileOffset: UInt64(fixture.truncatedMethodListOffset)
+                )
+            }
+        )
+        guard case let .failure(_, reason) = truncated,
+              case .unreadableFileRange = reason else {
+            return XCTFail("Singular file queries must validate the complete member table")
+        }
+    }
+
     private func methodNames(
         in result: ObjCMemberListResolution<MachOImage, ObjCMethodList>
     ) -> [String] {

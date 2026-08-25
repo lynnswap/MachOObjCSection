@@ -47,7 +47,9 @@ internal enum ObjCLoadedImageReader {
         guard let rawValue = UInt64(exactly: rawPointer), rawValue != 0 else {
             return nil
         }
-        return UInt(exactly: machO.stripPointerTags(of: rawValue))
+        let strippedAddress = machO.stripPointerTags(of: rawValue)
+        guard strippedAddress != 0 else { return nil }
+        return UInt(exactly: strippedAddress)
     }
 
     static func logicalOffset(
@@ -57,6 +59,19 @@ internal enum ObjCLoadedImageReader {
         signedDisplacement(
             from: UInt(bitPattern: machO.ptr),
             to: address
+        )
+    }
+
+    static func provenance<Pointer: FixedWidthInteger>(
+        for rawPointer: Pointer,
+        in machO: MachOImage
+    ) -> ObjCMetadataTableDiagnostic.Provenance {
+        guard let address = canonicalAddress(rawPointer, in: machO) else {
+            return .init()
+        }
+        return .init(
+            logicalOffset: logicalOffset(of: address, in: machO),
+            imageAddress: address
         )
     }
 

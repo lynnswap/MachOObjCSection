@@ -13,18 +13,31 @@ import Foundation
 /// preserving every readable sibling root.
 @_spi(Diagnostics)
 public struct ObjCImageRootReadResult {
+    /// Roots from `__objc_classlist`, or `nil` when the section/bitness is absent.
     public let classes64: [ObjCClass64]?
+    /// 32-bit roots from `__objc_classlist`, or `nil` when absent.
     public let classes32: [ObjCClass32]?
+    /// Roots from `__objc_nlclslist`, or `nil` when the section/bitness is absent.
     public let nonLazyClasses64: [ObjCClass64]?
+    /// 32-bit roots from `__objc_nlclslist`, or `nil` when absent.
     public let nonLazyClasses32: [ObjCClass32]?
+    /// Roots from `__objc_protolist`, or `nil` when the section/bitness is absent.
     public let protocols64: [ObjCProtocol64]?
+    /// 32-bit roots from `__objc_protolist`, or `nil` when absent.
     public let protocols32: [ObjCProtocol32]?
+    /// Roots from `__objc_catlist`, or `nil` when the section/bitness is absent.
     public let categories64: [ObjCCategory64]?
+    /// 32-bit roots from `__objc_catlist`, or `nil` when absent.
     public let categories32: [ObjCCategory32]?
+    /// Roots from `__objc_nlcatlist`, or `nil` when the section/bitness is absent.
     public let nonLazyCategories64: [ObjCCategory64]?
+    /// 32-bit roots from `__objc_nlcatlist`, or `nil` when absent.
     public let nonLazyCategories32: [ObjCCategory32]?
+    /// Roots from `__objc_catlist2`, or `nil` when the section/bitness is absent.
     public let categories2_64: [ObjCCategory64]?
+    /// 32-bit roots from `__objc_catlist2`, or `nil` when absent.
     public let categories2_32: [ObjCCategory32]?
+    /// Recoverable root table and entry failures in discovery order.
     public let tableDiagnostics: [ObjCMetadataTableDiagnostic]
 
     internal init(
@@ -117,20 +130,19 @@ extension MachOImage.ObjectiveC {
             isCatlist2: true
         )
 
-        let reads: [AnyRootRead] = [
-            classes64.map(AnyRootRead.init),
-            classes32.map(AnyRootRead.init),
-            nonLazyClasses64.map(AnyRootRead.init),
-            nonLazyClasses32.map(AnyRootRead.init),
-            protocols64.map(AnyRootRead.init),
-            protocols32.map(AnyRootRead.init),
-            categories64.map(AnyRootRead.init),
-            categories32.map(AnyRootRead.init),
-            nonLazyCategories64.map(AnyRootRead.init),
-            nonLazyCategories32.map(AnyRootRead.init),
-            categories2_64.map(AnyRootRead.init),
-            categories2_32.map(AnyRootRead.init),
-        ].compactMap { $0 }
+        var tableDiagnostics: [ObjCMetadataTableDiagnostic] = []
+        tableDiagnostics.append(contentsOf: classes64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: classes32?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: nonLazyClasses64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: nonLazyClasses32?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: protocols64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: protocols32?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: categories64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: categories32?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: nonLazyCategories64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: nonLazyCategories32?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: categories2_64?.diagnostics ?? [])
+        tableDiagnostics.append(contentsOf: categories2_32?.diagnostics ?? [])
 
         return ObjCImageRootReadResult(
             classes64: classes64?.values,
@@ -145,16 +157,8 @@ extension MachOImage.ObjectiveC {
             nonLazyCategories32: nonLazyCategories32?.values,
             categories2_64: categories2_64?.values,
             categories2_32: categories2_32?.values,
-            tableDiagnostics: reads.flatMap(\.diagnostics)
+            tableDiagnostics: tableDiagnostics
         )
-    }
-}
-
-private struct AnyRootRead {
-    let diagnostics: [ObjCMetadataTableDiagnostic]
-
-    init<Value>(_ read: ObjCLoadedRootTableRead<Value>) {
-        self.diagnostics = read.diagnostics
     }
 }
 
@@ -292,7 +296,66 @@ extension MachOImage.ObjectiveC {
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
     ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
-        let subject = ObjCMetadataTableDiagnostic.Subject.loadedImageRoot(
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
+            section: root,
+            pointerWidth: pointerWidth
+        )
+        guard let slide = machO.vmaddrSlide else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .missingImageSlide
+                    )
+                ]
+            )
+        }
+        guard let unslidAddress = UInt(exactly: rawAddress),
+              let tableAddress = addingSignedDisplacement(slide, to: unslidAddress) else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .invalidSectionAddress(
+                            rawAddress: rawAddress,
+                            slide: slide
+                        )
+                    )
+                ]
+            )
+        }
+        return readRootTable(
+            tableAddress: tableAddress,
+            rawByteCount: rawByteCount,
+            pointerType: pointerType,
+            layoutType: layoutType,
+            root: root,
+            pointerWidth: pointerWidth,
+            layoutReader: { address in
+                ObjCMetadataTableReader.readImageLayout(
+                    address: address,
+                    as: layoutType
+                )
+            },
+            makeValue: makeValue
+        )
+    }
+
+    internal func readRootTable<Pointer, Layout, Value>(
+        tableAddress: UInt,
+        rawByteCount: UInt64,
+        pointerType: Pointer.Type,
+        layoutType: Layout.Type,
+        root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
+        layoutReader: (UInt) -> ObjCMetadataTableRead<Layout>,
+        makeValue: (Layout, Int) -> Value
+    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
         )
@@ -304,30 +367,11 @@ extension MachOImage.ObjectiveC {
                 values: [],
                 diagnostics: [
                     .init(
-                        subject: subject,
-                        location: .table,
-                        provenance: .init(),
+                        owner: owner,
+                        site: .table(.init()),
                         failure: .invalidSectionByteCount(
                             byteCount: rawByteCount,
                             pointerSize: pointerSize
-                        )
-                    )
-                ]
-            )
-        }
-        guard let slide = machO.vmaddrSlide,
-              let unslidAddress = UInt(exactly: rawAddress),
-              let tableAddress = addingSignedDisplacement(slide, to: unslidAddress) else {
-            return .init(
-                values: [],
-                diagnostics: [
-                    .init(
-                        subject: subject,
-                        location: .table,
-                        provenance: .init(),
-                        failure: .invalidSectionAddress(
-                            rawAddress: rawAddress,
-                            slide: machO.vmaddrSlide ?? 0
                         )
                     )
                 ]
@@ -348,9 +392,8 @@ extension MachOImage.ObjectiveC {
                 values: [],
                 diagnostics: [
                     .init(
-                        subject: subject,
-                        location: .table,
-                        provenance: tableProvenance,
+                        owner: owner,
+                        site: .table(tableProvenance),
                         failure: .init(failure)
                     )
                 ]
@@ -372,9 +415,8 @@ extension MachOImage.ObjectiveC {
                 values: [],
                 diagnostics: [
                     .init(
-                        subject: subject,
-                        location: .table,
-                        provenance: tableProvenance,
+                        owner: owner,
+                        site: .table(tableProvenance),
                         failure: .init(failure)
                     )
                 ]
@@ -389,13 +431,14 @@ extension MachOImage.ObjectiveC {
                 logicalOffset: entry.logicalOffset,
                 imageAddress: entry.address
             )
-            guard let rawPointer = UInt64(exactly: entry.value), rawPointer != 0,
-                  let address = UInt(exactly: machO.stripPointerTags(of: rawPointer)) else {
+            guard let rawPointer = UInt64(exactly: entry.value), rawPointer != 0 else {
                 diagnostics.append(
                     .init(
-                        subject: subject,
-                        location: .entry(index: entry.index),
-                        provenance: entryProvenance,
+                        owner: owner,
+                        site: .entry(
+                            index: entry.index,
+                            provenance: entryProvenance
+                        ),
                         failure: .invalidPointer(
                             rawValue: UInt64(exactly: entry.value) ?? 0
                         )
@@ -403,12 +446,29 @@ extension MachOImage.ObjectiveC {
                 )
                 continue
             }
+            let strippedAddress = machO.stripPointerTags(of: rawPointer)
+            guard strippedAddress != 0,
+                  let address = UInt(exactly: strippedAddress) else {
+                diagnostics.append(
+                    .init(
+                        owner: owner,
+                        site: .entry(
+                            index: entry.index,
+                            provenance: entryProvenance
+                        ),
+                        failure: .invalidPointer(rawValue: rawPointer)
+                    )
+                )
+                continue
+            }
             guard let offset = signedDisplacement(from: imageBase, to: address) else {
                 diagnostics.append(
                     .init(
-                        subject: subject,
-                        location: .entry(index: entry.index),
-                        provenance: entryProvenance,
+                        owner: owner,
+                        site: .entry(
+                            index: entry.index,
+                            provenance: entryProvenance
+                        ),
                         failure: .invalidEntryArithmetic(
                             baseAddress: imageBase,
                             targetAddress: address
@@ -417,18 +477,18 @@ extension MachOImage.ObjectiveC {
                 )
                 continue
             }
-            switch ObjCMetadataTableReader.readImageLayout(
-                address: address,
-                as: layoutType
-            ) {
+            let layoutRead = layoutReader(address)
+            switch layoutRead {
             case .success(let layout):
                 values.append(makeValue(layout, offset))
             case .failure:
                 diagnostics.append(
                     .init(
-                        subject: subject,
-                        location: .entry(index: entry.index),
-                        provenance: entryProvenance,
+                        owner: owner,
+                        site: .entry(
+                            index: entry.index,
+                            provenance: entryProvenance
+                        ),
                         failure: .unreadableReferencedLayout(
                             address: address,
                             byteCount: MemoryLayout<Layout>.size
