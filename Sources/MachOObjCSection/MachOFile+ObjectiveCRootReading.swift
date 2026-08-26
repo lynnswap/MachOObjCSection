@@ -384,6 +384,8 @@ extension MachOFile.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
+        // Do not move below coordinate validation: dyld cache coalescing can
+        // leave a removed empty section at the segment end with file offset zero.
         guard section.layout.size > 0 else {
             return .init(values: [], diagnostics: [])
         }
@@ -438,6 +440,8 @@ extension MachOFile.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
+        // Do not move below coordinate validation: dyld cache coalescing can
+        // leave a removed empty section at the segment end with file offset zero.
         guard section.layout.size > 0 else {
             return .init(values: [], diagnostics: [])
         }
