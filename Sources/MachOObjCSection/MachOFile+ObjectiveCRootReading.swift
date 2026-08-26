@@ -379,7 +379,7 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCMetadataPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -435,7 +435,7 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCMetadataPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -522,7 +522,7 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCMetadataPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -652,7 +652,7 @@ extension MachOFile.ObjectiveC {
                 logicalOffset: entry.logicalOffset,
                 fileOffset: entry.fileOffset
             )
-            let rawPointer = entry.value.rootPointerValue
+            let rawPointer = entry.value.metadataPointerValue
             guard rawPointer != 0 else {
                 diagnostics.append(
                     entryFailure(
