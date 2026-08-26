@@ -63,33 +63,54 @@ extension MachOImage.ObjectiveC {
     public var methods: MachOImage.ObjCMethodLists? {
         let loadCommands = machO.loadCommands
 
-        guard let vmaddrSlide = machO.vmaddrSlide else { return nil }
-
-        let __objc_methlist: any SectionProtocol
         if let _text = loadCommands.text64,
            let section = _text.__objc_methlist(in: machO) {
-            __objc_methlist = section
+            return methodLists(section: section, text: _text)
         } else if let _text = loadCommands.text,
                   let section = _text.__objc_methlist(in: machO) {
-            __objc_methlist = section
-        } else {
+            return methodLists(section: section, text: _text)
+        }
+        return nil
+    }
+
+    private func methodLists(
+        section: Section64,
+        text: SegmentCommand64
+    ) -> MachOImage.ObjCMethodLists? {
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: text) else {
             return nil
         }
+        return methodLists(section: coordinates)
+    }
 
-        guard __objc_methlist.size >= 0,
-              let sectionAddress = UInt(exactly: __objc_methlist.address),
-              let startAddress = addingSignedDisplacement(vmaddrSlide, to: sectionAddress),
-              let start = UnsafeRawPointer(bitPattern: startAddress),
-              let sectionOffset = signedDisplacement(
-                from: UInt(bitPattern: machO.ptr),
-                to: startAddress
-              ) else { return nil }
+    private func methodLists(
+        section: Section,
+        text: SegmentCommand
+    ) -> MachOImage.ObjCMethodLists? {
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: text) else {
+            return nil
+        }
+        return methodLists(section: coordinates)
+    }
+
+    private func methodLists(
+        section: CheckedObjCSectionCoordinates
+    ) -> MachOImage.ObjCMethodLists? {
+        guard let sectionOffset = Int(exactly: section.segmentVirtualMemoryOffset),
+              let sectionDisplacement = UInt(exactly: section.segmentVirtualMemoryOffset) else {
+            return nil
+        }
+        let (startAddress, addressOverflow) = UInt(bitPattern: machO.ptr).addingReportingOverflow(
+            sectionDisplacement
+        )
+        guard !addressOverflow,
+              let start = UnsafeRawPointer(bitPattern: startAddress) else { return nil }
 
         return .init(
             offset: sectionOffset,
             basePointer: start,
-            tableSize: __objc_methlist.size,
-            align: __objc_methlist.align,
+            tableSize: section.size,
+            align: section.alignmentExponent,
             is64Bit: machO.is64Bit
         )
     }

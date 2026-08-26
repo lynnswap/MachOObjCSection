@@ -46,37 +46,59 @@ extension MachOFile.ObjectiveC {
     public var methods: MachOFile.ObjCMethodLists? {
         let loadCommands = machO.loadCommands
 
-        let __objc_methlist: any SectionProtocol
         if let text = loadCommands.text64,
            let section = text.__objc_methlist(in: machO) {
-            __objc_methlist = section
+            return methodLists(section: section, text: text)
         } else if let text = loadCommands.text,
                   let section = text.__objc_methlist(in: machO) {
-            __objc_methlist = section
-        } else {
+            return methodLists(section: section, text: text)
+        }
+        return nil
+    }
+
+    private func methodLists(
+        section: Section64,
+        text: SegmentCommand64
+    ) -> MachOFile.ObjCMethodLists? {
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: text) else {
             return nil
         }
+        return methodLists(section: coordinates)
+    }
 
+    private func methodLists(
+        section: Section,
+        text: SegmentCommand
+    ) -> MachOFile.ObjCMethodLists? {
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: text) else {
+            return nil
+        }
+        return methodLists(section: coordinates)
+    }
+
+    private func methodLists(
+        section: CheckedObjCSectionCoordinates
+    ) -> MachOFile.ObjCMethodLists? {
         let offset: Int
         if let cache = machO.cache {
             guard let cacheOffset = checkedCacheOffset(
-                address: UInt64(__objc_methlist.address),
+                address: section.address,
                 sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
             ), let exactOffset = Int(exactly: cacheOffset) else { return nil }
             offset = exactOffset
         } else {
-            offset = __objc_methlist.offset
+            offset = section.fileOffset
         }
-        guard let fileSlice = machO._fileSliceForSection(section: __objc_methlist),
+        guard let fileSlice = machO._fileSliceForCheckedSection(section: section),
               let data = try? fileSlice.readData(
                 offset: 0,
-                length: __objc_methlist.size
+                length: section.size
               ) else { return nil }
 
         return .init(
             data: data,
             offset: offset,
-            align: __objc_methlist.align,
+            align: section.alignmentExponent,
             is64Bit: machO.is64Bit
         )
     }
@@ -442,6 +464,40 @@ extension MachOFile.ObjectiveC {
 }
 
 extension MachOFile {
+    fileprivate func _fileSliceForCheckedSection(
+        section: CheckedObjCSectionCoordinates
+    ) -> File.FileSlice? {
+        guard fileHandle.size >= 0 else { return nil }
+        let isWithinFileRange = section.mappedFileOffset <= UInt64(fileHandle.size)
+
+        // Some cache-backed section data is stored in a separate cache file.
+        if isLoadedFromDyldCache && !isWithinFileRange {
+            guard let fullCache,
+                  let concatenatedOffset = fullCache.fileOffset(of: section.address),
+                  let exactConcatenatedOffset = Int(exactly: concatenatedOffset),
+                  let segment = fullCache.fileSegment(forOffset: concatenatedOffset) else {
+                return nil
+            }
+            let (localOffset, underflow) = exactConcatenatedOffset.subtractingReportingOverflow(
+                segment.offset
+            )
+            guard !underflow else { return nil }
+            return try? segment._file.fileSlice(
+                offset: localOffset,
+                length: section.size
+            )
+        }
+
+        let (absoluteOffset, overflow) = headerStartOffset.addingReportingOverflow(
+            section.fileOffset
+        )
+        guard !overflow else { return nil }
+        return try? fileHandle.fileSlice(
+            offset: absoluteOffset,
+            length: section.size
+        )
+    }
+
     fileprivate func _fileSliceForSection(
         section: any SectionProtocol
     ) -> File.FileSlice? {
