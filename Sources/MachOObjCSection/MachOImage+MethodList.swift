@@ -59,6 +59,8 @@ extension MachOImage.ObjCMethodLists {
             guard tableSize >= 0, nextOffset >= 0, nextOffset < tableSize else {
                 return nil
             }
+            let headerSize = MemoryLayout<Element.Header>.size
+            guard headerSize <= tableSize - nextOffset else { return nil }
             let baseAddress = UInt(bitPattern: basePointer)
             let (headerAddress, addressOverflow) = baseAddress.addingReportingOverflow(
                 UInt(nextOffset)

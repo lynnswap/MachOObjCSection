@@ -112,6 +112,17 @@ final class ObjCMethodListIteratorSafetyTests: XCTestCase {
             is64Bit: true
         )
         XCTAssertTrue(Array(truncated).isEmpty)
+
+        for trailingByteCount in 1..<MemoryLayout<EntrySizeListHeader>.size {
+            let trailingBytes = MachOImage.ObjCMethodLists(
+                offset: 0,
+                basePointer: UnsafeRawPointer(storage),
+                tableSize: trailingByteCount,
+                align: 0,
+                is64Bit: true
+            )
+            XCTAssertTrue(Array(trailingBytes).isEmpty)
+        }
     }
 
     func testEntrySizeListSizeProjectionIsBoundedAndOverflowSafe() {
