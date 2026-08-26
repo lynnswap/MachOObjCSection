@@ -25,6 +25,22 @@ internal func isPointerSafelyReadable(
     MachOObjCSectionIsMemoryReadable(ptr, length)
 }
 
+internal func readMemorySnapshot(
+    at address: UInt,
+    byteCount: Int
+) -> Data? {
+    guard byteCount >= 0 else { return nil }
+    guard byteCount > 0 else { return Data() }
+    guard let source = UnsafeRawPointer(bitPattern: address) else { return nil }
+
+    var data = Data(count: byteCount)
+    let copied = data.withUnsafeMutableBytes { bytes in
+        guard let destination = bytes.baseAddress else { return false }
+        return MachOObjCSectionCopyMemory(source, destination, byteCount)
+    }
+    return copied ? data : nil
+}
+
 internal enum BoundedCStringReadLimits {
     static let maximumByteCount = 64 * 1_024
 }

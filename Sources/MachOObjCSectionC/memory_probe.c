@@ -70,3 +70,23 @@ bool MachOObjCSectionIsMemoryReadable(const void *address, size_t length) {
     }
     return probe_byte(endAddress);
 }
+
+bool MachOObjCSectionCopyMemory(
+    const void *address,
+    void *destination,
+    size_t length
+) {
+    if (address == NULL || destination == NULL || length == 0) {
+        return false;
+    }
+
+    mach_vm_size_t outSize = 0;
+    kern_return_t result = mach_vm_read_overwrite(
+        mach_task_self(),
+        (mach_vm_address_t)(uintptr_t)address,
+        (mach_vm_size_t)length,
+        (mach_vm_address_t)(uintptr_t)destination,
+        &outSize
+    );
+    return result == KERN_SUCCESS && outSize == (mach_vm_size_t)length;
+}

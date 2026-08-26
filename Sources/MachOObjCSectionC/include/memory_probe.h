@@ -26,6 +26,15 @@ extern "C" {
 /// page touched by the range before the Swift side dereferences it.
 bool MachOObjCSectionIsMemoryReadable(const void *address, size_t length);
 
+/// Copies exactly `length` readable bytes from the current task into
+/// `destination`. Returns `false` without dereferencing `address` when the
+/// complete source range cannot be copied.
+bool MachOObjCSectionCopyMemory(
+    const void *address,
+    void *destination,
+    size_t length
+);
+
 #ifdef __cplusplus
 }
 #endif

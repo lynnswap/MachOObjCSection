@@ -280,51 +280,57 @@ internal enum ObjCMetadataTableReader {
                 )
             }
         }
-        if byteCount > 0 {
-            guard let pointer = UnsafeRawPointer(bitPattern: address),
-                  isPointerSafelyReadable(pointer, length: byteCount) else {
-                return .failure(.unreadableImageRange(address: address, byteCount: byteCount))
-            }
+        guard let snapshot = readMemorySnapshot(
+            at: address,
+            byteCount: byteCount
+        ) else {
+            return .failure(.unreadableImageRange(address: address, byteCount: byteCount))
         }
 
         var result: [ObjCMetadataTableEntry<Element>] = []
         result.reserveCapacity(count)
-        for index in 0..<count {
-            let (delta, deltaOverflow) = index.multipliedReportingOverflow(by: stride)
-            guard !deltaOverflow else {
-                return .failure(
-                    .rangeOverflow(startOffset: UInt64(address), byteCount: byteCount)
-                )
-            }
-            let (entryAddress, addressOverflow) = address.addingReportingOverflow(UInt(delta))
-            guard !addressOverflow,
-                  let pointer = UnsafeRawPointer(bitPattern: entryAddress) else {
-                return .failure(
-                    .rangeOverflow(startOffset: UInt64(address), byteCount: byteCount)
-                )
-            }
-            let entryLogicalOffset: Int?
-            if let logicalOffset {
-                let (value, overflow) = logicalOffset.addingReportingOverflow(delta)
-                guard !overflow else {
+        return snapshot.withUnsafeBytes { bytes in
+            for index in 0..<count {
+                let (delta, deltaOverflow) = index.multipliedReportingOverflow(by: stride)
+                guard !deltaOverflow else {
                     return .failure(
                         .rangeOverflow(startOffset: UInt64(address), byteCount: byteCount)
                     )
                 }
-                entryLogicalOffset = value
-            } else {
-                entryLogicalOffset = nil
-            }
-            result.append(
-                .init(
-                    index: index,
-                    value: pointer.loadUnaligned(as: elementType),
-                    logicalOffset: entryLogicalOffset,
-                    fileOffset: nil,
-                    address: entryAddress
+                let (entryAddress, addressOverflow) = address.addingReportingOverflow(
+                    UInt(delta)
                 )
-            )
+                guard !addressOverflow else {
+                    return .failure(
+                        .rangeOverflow(startOffset: UInt64(address), byteCount: byteCount)
+                    )
+                }
+                let entryLogicalOffset: Int?
+                if let logicalOffset {
+                    let (value, overflow) = logicalOffset.addingReportingOverflow(delta)
+                    guard !overflow else {
+                        return .failure(
+                            .rangeOverflow(startOffset: UInt64(address), byteCount: byteCount)
+                        )
+                    }
+                    entryLogicalOffset = value
+                } else {
+                    entryLogicalOffset = nil
+                }
+                result.append(
+                    .init(
+                        index: index,
+                        value: bytes.loadUnaligned(
+                            fromByteOffset: delta,
+                            as: elementType
+                        ),
+                        logicalOffset: entryLogicalOffset,
+                        fileOffset: nil,
+                        address: entryAddress
+                    )
+                )
+            }
+            return .success(result)
         }
-        return .success(result)
     }
 }
