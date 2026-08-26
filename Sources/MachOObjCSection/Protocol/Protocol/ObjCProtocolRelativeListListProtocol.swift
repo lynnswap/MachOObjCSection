@@ -119,29 +119,52 @@ extension ObjCProtocolRelativeListListProtocol {
         imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
         imageResolver: (Int) -> MachOImage? = defaultRelativeImage
     ) -> ObjCProtocolListResolution<MachOImage, List> {
-        resolveRelativeLists(
+        resolveLoadedLists(
             in: machO,
             imageLoadResolver: imageLoadResolver,
-            imageResolver: imageResolver,
-            makeList: { _, pointer, listOffset, _ in
-                guard isPointerSafelyReadable(
-                    pointer,
-                    length: MemoryLayout<List.Header>.size
-                ) else {
-                    return .failure(
-                        .unreadableImageHeader(
-                            address: UInt(bitPattern: pointer),
-                            byteCount: MemoryLayout<List.Header>.size
-                        )
-                    )
-                }
-                return .success(List(ptr: pointer, offset: listOffset))
-            }
+            imageResolver: imageResolver
         ).mapFailure {
             .init(
                 listOffset: $0.diagnosticOffset,
                 failure: $0.reason.protocolDiagnosticFailure
             )
         }
+    }
+
+    internal func resolveLoadedLists(
+        in machO: MachOImage,
+        imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
+        imageResolver: (Int) -> MachOImage? = defaultRelativeImage
+    ) -> ObjCRelativeListResolution<MachOImage, List, ObjCRelativeListFailure> {
+        resolveRelativeLists(
+            in: machO,
+            imageLoadResolver: imageLoadResolver,
+            imageResolver: imageResolver,
+            makeList: { targetMachO, pointer, listOffset, _ in
+                let address = UInt(bitPattern: pointer)
+                let header: List.Header
+                switch ObjCMetadataTableReader.readImageLayout(
+                    address: address,
+                    as: List.Header.self
+                ) {
+                case .success(let value):
+                    header = value
+                case .failure:
+                    return .failure(
+                        .unreadableImageHeader(
+                            address: address,
+                            byteCount: MemoryLayout<List.Header>.size
+                        )
+                    )
+                }
+                let list = List(offset: listOffset, header: header)
+                switch list.readProtocols(in: targetMachO) {
+                case .success:
+                    return .success(list)
+                case .failure(let failure):
+                    return .failure(failure.relativeListReason)
+                }
+            }
+        )
     }
 }

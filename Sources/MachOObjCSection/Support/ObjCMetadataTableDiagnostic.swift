@@ -47,6 +47,8 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case fileRoot(section: RootSection, pointerWidth: PointerWidth)
         /// One root pointer section in the loaded image.
         case loadedImageRoot(section: RootSection, pointerWidth: PointerWidth)
+        /// One tagged list array in a loaded class read/write extension.
+        case loadedRWExtension(kind: RWExtensionListKind, pointerWidth: PointerWidth)
         /// One class layout reached through a loaded relationship pointer.
         case loadedRelationship(
             subject: MetadataSubject,
@@ -72,6 +74,12 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
     public enum PointerWidth: Int, Sendable, Equatable {
         case bits32 = 32
         case bits64 = 64
+    }
+
+    public enum RWExtensionListKind: Sendable, Equatable {
+        case method
+        case property
+        case `protocol`
     }
 
     public enum LoadedRelationshipRole: Sendable, Equatable {
@@ -168,6 +176,7 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case missingReferencedImage(address: UInt)
         case unreadableReferencedLayout(address: UInt, byteCount: Int)
         case invalidEntryArithmetic(baseAddress: UInt, targetAddress: UInt)
+        case relativeImageUnavailable(imageIndex: Int)
     }
 }
 

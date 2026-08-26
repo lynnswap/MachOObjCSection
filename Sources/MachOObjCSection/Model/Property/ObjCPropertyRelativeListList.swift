@@ -26,14 +26,6 @@ extension ObjCPropertyRelativeListList: ObjCMemberRelativeListListProtocol {
     }
 
     internal func makeList(
-        ptr: UnsafeRawPointer,
-        offset: Int,
-        is64Bit: Bool
-    ) -> ObjCPropertyList {
-        .init(ptr: ptr, offset: offset, is64Bit: is64Bit)
-    }
-
-    internal func makeList(
         offset: Int,
         header: EntrySizeListHeader,
         is64Bit: Bool

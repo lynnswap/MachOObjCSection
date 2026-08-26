@@ -15,67 +15,102 @@ public struct ObjCMethodArray {
 }
 
 extension ObjCMethodArray {
-    var kind: ListArrayKind? {
-        .init(rawValue: numericCast(offset) & 3)
-    }
-
     public func lists(in machO: MachOImage) -> [ObjCMethodList] {
-        let start = machO.ptr
-            .advanced(by: offset & ~3)
-
-        var lists: [ObjCMethodList] = []
-        switch kind {
-        case .single:
-            lists.append(
-                ObjCMethodList(
-                    ptr: start,
-                    offset: Int(bitPattern: start) - Int(bitPattern: machO.ptr),
-                    is64Bit: machO.is64Bit
-                )
-            )
-        case .array:
-            var currentOffset: Int = 0
-            let count = start
-                .assumingMemoryBound(to: UInt32.self)
-                .pointee
-            for _ in 0 ..< Int(count) {
-                let address = start
-                    .advanced(
-                        by: machO.is64Bit ? MemoryLayout<UInt64>.size : 0
-                    ) // `count` + align
-                    .advanced(by: currentOffset)
-                    .assumingMemoryBound(to: UInt.self)
-                    .pointee
-                let strippedAddress = UInt(machO.stripPointerTags(of: numericCast(address)))
-                guard let ptr = UnsafeRawPointer(bitPattern: strippedAddress) else {
-                    currentOffset += MemoryLayout<UInt>.size
-                    continue
-                }
-                let list = ObjCMethodList(
-                    ptr: ptr,
-                    offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
-                    is64Bit: machO.is64Bit
-                )
-                lists.append(list)
-                currentOffset += MemoryLayout<UInt>.size
-            }
-        case .relative:
-            // Use `relativeListList(in:)`
-            break
-        case ._dummy, .none:
-            break
-        }
-
-        return lists
+        let result = readLists(in: machO)
+        guard result.representation != .relative else { return [] }
+        return result.entries.map(\.list)
     }
 
     public func relativeListList(in machO: MachOImage) -> ObjCMethodRelativeListList? {
-        guard kind == .relative else { return nil }
-        let start = machO.ptr
-            .advanced(by: offset & ~3)
-        return .init(
-            ptr: start,
-            offset: Int(bitPattern: start) - Int(bitPattern: machO.ptr)
+        readLists(in: machO).relativeListList
+    }
+
+    /// Reads the tagged list array without dereferencing unproved runtime memory.
+    @_spi(Diagnostics)
+    public func readLists(
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCMethodList,
+        ObjCMethodRelativeListList
+    > {
+        if is64Bit {
+            return readLists(
+                in: machO,
+                pointerType: UInt64.self,
+                pointerWidth: .bits64
+            )
+        }
+        return readLists(
+            in: machO,
+            pointerType: UInt32.self,
+            pointerWidth: .bits32
+        )
+    }
+
+    private func readLists<Pointer: ObjCMetadataPointer>(
+        in machO: MachOImage,
+        pointerType: Pointer.Type,
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCMethodList,
+        ObjCMethodRelativeListList
+    > {
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedRWExtension(
+            kind: .method,
+            pointerWidth: pointerWidth
+        )
+        return ObjCLoadedListArrayReader.read(
+            ObjCLoadedListArrayReader.storage(
+                fromTaggedOffset: offset,
+                in: machO
+            ),
+            in: machO,
+            pointerType: pointerType,
+            owner: owner,
+            readList: { pointer in
+                ObjCLoadedImageReader.readEntrySizeList(
+                    from: pointer,
+                    in: machO,
+                    validateList: { list in
+                        guard case .failure(let failure) = list.readMethods(
+                            in: machO
+                        ) else { return nil }
+                        return failure
+                    },
+                    makeList: { header, offset in
+                        ObjCMethodList(
+                            offset: offset,
+                            header: header,
+                            is64Bit: is64Bit
+                        )
+                    }
+                )
+            },
+            readRelative: { storage in
+                switch ObjCMetadataTableReader.readImageLayout(
+                    address: storage.address,
+                    as: EntrySizeListHeader.self
+                ) {
+                case .failure(let failure):
+                    return ObjCLoadedListArrayReader.tableFailure(
+                        representation: .relative,
+                        owner: owner,
+                        provenance: storage.provenance,
+                        failure: .init(failure)
+                    )
+                case .success(let header):
+                    let relative = ObjCMethodRelativeListList(
+                        offset: storage.offset,
+                        header: header
+                    )
+                    return ObjCLoadedListArrayReader.relativeResult(
+                        relative,
+                        resolution: relative.resolveMemberLists(in: machO),
+                        in: machO,
+                        owner: owner
+                    )
+                }
+            }
         )
     }
 }

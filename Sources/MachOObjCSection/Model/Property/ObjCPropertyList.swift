@@ -19,18 +19,6 @@ public struct ObjCPropertyList: EntrySizeListProtocol {
 }
 
 extension ObjCPropertyList {
-    init(
-        ptr: UnsafeRawPointer,
-        offset: Int,
-        is64Bit: Bool
-    ) {
-        self.offset = offset
-        self.header = ptr.loadUnaligned(as: Header.self)
-        self.is64Bit = is64Bit
-    }
-}
-
-extension ObjCPropertyList {
     public var isListOfLists: Bool {
         offset & 1 == 1
     }

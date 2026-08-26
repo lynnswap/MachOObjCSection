@@ -115,6 +115,22 @@ private func consumeFileRootDiagnostics(
     file.objc.readRoots().tableDiagnostics
 }
 
+private func consumeLoadedRWExtensionDiagnostics<Extension: ObjCClassRWDataExtProtocol>(
+    extensionData: Extension,
+    image: MachOImage
+) -> [ObjCMetadataTableDiagnostic] {
+    let methods = extensionData.readMethodLists(in: image)
+    let properties = extensionData.readPropertyLists(in: image)
+    let protocols = extensionData.readProtocolLists(in: image)
+    _ = methods.representation
+    _ = methods.entries.first?.image
+    _ = methods.entries.first?.list
+    _ = methods.relativeListList
+    return methods.tableDiagnostics
+        + properties.tableDiagnostics
+        + protocols.tableDiagnostics
+}
+
 private func inspectTableDiagnostic(
     _ diagnostic: ObjCMetadataTableDiagnostic
 ) -> Int {
@@ -152,6 +168,15 @@ private func inspectTableDiagnostic(
         case .metaclass, .superclass, .categoryClass, .categoryStubClass:
             break
         }
+    case let .loadedRWExtension(kind, pointerWidth):
+        switch kind {
+        case .method, .property, .protocol:
+            break
+        }
+        switch pointerWidth {
+        case .bits32, .bits64:
+            break
+        }
     }
 
     let provenance: ObjCMetadataTableDiagnostic.Provenance
@@ -178,7 +203,8 @@ private func inspectTableDiagnostic(
          .invalidRelativeDisplacement:
         break
     case .invalidListOffset(let offset),
-         .invalidSignedElementCount(let offset):
+         .invalidSignedElementCount(let offset),
+         .relativeImageUnavailable(let offset):
         _ = offset
     case .invalidElementCount(let count),
          .invalidElementStride(let count):

@@ -14,12 +14,6 @@ internal typealias ObjCMemberListResolution<Source, List> =
 
 internal protocol ObjCMemberRelativeListListProtocol: RelativeListListProtocol where List: EntrySizeListProtocol {
     func makeList(
-        ptr: UnsafeRawPointer,
-        offset: Int,
-        is64Bit: Bool
-    ) -> List
-
-    func makeList(
         offset: Int,
         header: EntrySizeListHeader,
         is64Bit: Bool
@@ -138,20 +132,25 @@ extension ObjCMemberRelativeListListProtocol {
         pointer: UnsafeRawPointer,
         listOffset: Int
     ) -> Result<List, ObjCRelativeListFailure.Reason> {
-        guard isPointerSafelyReadable(
-            pointer,
-            length: MemoryLayout<EntrySizeListHeader>.size
-        ) else {
+        let listAddress = UInt(bitPattern: pointer)
+        let header: EntrySizeListHeader
+        switch ObjCMetadataTableReader.readImageLayout(
+            address: listAddress,
+            as: EntrySizeListHeader.self
+        ) {
+        case .success(let value):
+            header = value
+        case .failure:
             return .failure(
                 .unreadableImageHeader(
-                    address: UInt(bitPattern: pointer),
+                    address: listAddress,
                     byteCount: MemoryLayout<EntrySizeListHeader>.size
                 )
             )
         }
         let list = makeList(
-            ptr: pointer,
             offset: listOffset,
+            header: header,
             is64Bit: targetMachO.is64Bit
         )
         let count: Int
@@ -161,7 +160,6 @@ extension ObjCMemberRelativeListListProtocol {
         }
         guard count > 0 else { return .success(list) }
         let requiredAlignment = expectedEntryAlignment(for: list)
-        let listAddress = UInt(bitPattern: pointer)
         guard listAddress.isMultiple(of: UInt(requiredAlignment)) else {
             return .failure(
                 .misalignedListAddress(

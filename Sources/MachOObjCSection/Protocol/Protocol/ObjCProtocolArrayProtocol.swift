@@ -22,64 +22,112 @@ public protocol ObjCProtocolArrayProtocol {
 }
 
 extension ObjCProtocolArrayProtocol {
-    var kind: ListArrayKind? {
-        .init(rawValue: numericCast(offset) & 3)
-    }
-
     public func lists(in machO: MachOImage) -> [ObjCProtocolList] {
-        let start = machO.ptr
-            .advanced(by: offset & ~3)
-
-        var lists: [ObjCProtocolList] = []
-        switch kind {
-        case .single:
-            lists.append(
-                ObjCProtocolList(
-                    ptr: start,
-                    offset: Int(bitPattern: start) - Int(bitPattern: machO.ptr)
-                )
-            )
-        case .array:
-            let count = start
-                .assumingMemoryBound(to: UInt32.self)
-                .pointee
-            let sequnece = MemorySequence(
-                basePointer: start
-                    .advanced(
-                        by: machO.is64Bit ? MemoryLayout<UInt64>.size : MemoryLayout<UInt32>.size
-                    ) // `count` + align
-                    .assumingMemoryBound(to: UInt64.self),
-                numberOfElements: numericCast(count)
-            )
-
-            lists = sequnece
-                .compactMap {
-                    let strippedAddress = UInt(machO.stripPointerTags(of: numericCast($0)))
-                    guard let ptr = UnsafeRawPointer(bitPattern: strippedAddress) else {
-                        return nil
-                    }
-                    return ObjCProtocolList(
-                        ptr: ptr,
-                        offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-                    )
-                }
-        case .relative:
-            // Use `relativeListList(in:)`
-            break
-        case ._dummy, .none:
-            break
-        }
-
-        return lists
+        let result = readLists(in: machO)
+        guard result.representation != .relative else { return [] }
+        return result.entries.map(\.list)
     }
 
     public func relativeListList(in machO: MachOImage) -> ObjCProtocolRelativeListList? {
-        guard kind == .relative else { return nil }
-        let start = machO.ptr
-            .advanced(by: offset & ~3)
-        return .init(
-            ptr: start,
-            offset: Int(bitPattern: start) - Int(bitPattern: machO.ptr)
+        readLists(in: machO).relativeListList
+    }
+
+    /// Reads the tagged list array without dereferencing unproved runtime memory.
+    @_spi(Diagnostics)
+    public func readLists(
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCProtocolList,
+        ObjCProtocolRelativeListList
+    > {
+        if machO.is64Bit {
+            return readLists(
+                in: machO,
+                pointerType: UInt64.self,
+                pointerWidth: .bits64
+            )
+        }
+        return readLists(
+            in: machO,
+            pointerType: UInt32.self,
+            pointerWidth: .bits32
+        )
+    }
+
+    private func readLists<Pointer: ObjCMetadataPointer>(
+        in machO: MachOImage,
+        pointerType: Pointer.Type,
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCProtocolList,
+        ObjCProtocolRelativeListList
+    > {
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedRWExtension(
+            kind: .protocol,
+            pointerWidth: pointerWidth
+        )
+        return ObjCLoadedListArrayReader.read(
+            ObjCLoadedListArrayReader.storage(
+                fromTaggedOffset: offset,
+                in: machO
+            ),
+            in: machO,
+            pointerType: pointerType,
+            owner: owner,
+            readList: { pointer in
+                switch ObjCLoadedImageReader.readLayout(
+                    from: pointer,
+                    in: machO,
+                    as: ObjCProtocolList.Header.self
+                ) {
+                case .absent:
+                    return .absent
+                case let .failure(provenance, reason):
+                    return .failure(provenance: provenance, reason: reason)
+                case .value(let read):
+                    let list = ObjCProtocolList(
+                        offset: read.offset,
+                        header: read.layout
+                    )
+                    switch list.readProtocols(in: machO) {
+                    case .success:
+                        return .value(list)
+                    case .failure(let failure):
+                        return .failure(
+                            provenance: .init(
+                                logicalOffset: read.offset,
+                                imageAddress: read.address
+                            ),
+                            reason: .init(failure)
+                        )
+                    }
+                }
+            },
+            readRelative: { storage in
+                switch ObjCMetadataTableReader.readImageLayout(
+                    address: storage.address,
+                    as: EntrySizeListHeader.self
+                ) {
+                case .failure(let failure):
+                    return ObjCLoadedListArrayReader.tableFailure(
+                        representation: .relative,
+                        owner: owner,
+                        provenance: storage.provenance,
+                        failure: .init(failure)
+                    )
+                case .success(let header):
+                    let relative = ObjCProtocolRelativeListList(
+                        offset: storage.offset,
+                        header: header
+                    )
+                    return ObjCLoadedListArrayReader.relativeResult(
+                        relative,
+                        resolution: relative.resolveLoadedLists(in: machO),
+                        in: machO,
+                        owner: owner
+                    )
+                }
+            }
         )
     }
 }
