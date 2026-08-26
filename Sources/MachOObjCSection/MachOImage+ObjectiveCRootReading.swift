@@ -71,11 +71,6 @@ public struct ObjCImageRootReadResult {
     }
 }
 
-internal struct ObjCLoadedRootTableRead<Value> {
-    let values: [Value]
-    let diagnostics: [ObjCMetadataTableDiagnostic]
-}
-
 extension MachOImage.ObjectiveC {
     /// Reads all loaded Objective-C root sections and returns recoverable failures
     /// in the same section and entry discovery order as the root values.
@@ -166,7 +161,7 @@ extension MachOImage.ObjectiveC {
     internal func readClasses64(
         section sectionName: ObjCMachOSection,
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection
-    ) -> ObjCLoadedRootTableRead<ObjCClass64>? {
+    ) -> ObjCRootTableRead<ObjCClass64>? {
         guard machO.is64Bit,
               let match = machO.findObjCSection64AndSegment(for: sectionName) else {
             return nil
@@ -186,7 +181,7 @@ extension MachOImage.ObjectiveC {
     internal func readClasses32(
         section sectionName: ObjCMachOSection,
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection
-    ) -> ObjCLoadedRootTableRead<ObjCClass32>? {
+    ) -> ObjCRootTableRead<ObjCClass32>? {
         guard !machO.is64Bit,
               let match = machO.findObjCSection32AndSegment(for: sectionName) else {
             return nil
@@ -203,7 +198,7 @@ extension MachOImage.ObjectiveC {
         }
     }
 
-    internal func readProtocols64() -> ObjCLoadedRootTableRead<ObjCProtocol64>? {
+    internal func readProtocols64() -> ObjCRootTableRead<ObjCProtocol64>? {
         guard machO.is64Bit,
               let match = machO.findObjCSection64AndSegment(for: .__objc_protolist) else {
             return nil
@@ -220,7 +215,7 @@ extension MachOImage.ObjectiveC {
         }
     }
 
-    internal func readProtocols32() -> ObjCLoadedRootTableRead<ObjCProtocol32>? {
+    internal func readProtocols32() -> ObjCRootTableRead<ObjCProtocol32>? {
         guard !machO.is64Bit,
               let match = machO.findObjCSection32AndSegment(for: .__objc_protolist) else {
             return nil
@@ -241,7 +236,7 @@ extension MachOImage.ObjectiveC {
         section sectionName: ObjCMachOSection,
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         isCatlist2: Bool
-    ) -> ObjCLoadedRootTableRead<ObjCCategory64>? {
+    ) -> ObjCRootTableRead<ObjCCategory64>? {
         guard machO.is64Bit,
               let match = machO.findObjCSection64AndSegment(for: sectionName) else {
             return nil
@@ -266,7 +261,7 @@ extension MachOImage.ObjectiveC {
         section sectionName: ObjCMachOSection,
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         isCatlist2: Bool
-    ) -> ObjCLoadedRootTableRead<ObjCCategory32>? {
+    ) -> ObjCRootTableRead<ObjCCategory32>? {
         guard !machO.is64Bit,
               let match = machO.findObjCSection32AndSegment(for: sectionName) else {
             return nil
@@ -295,7 +290,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -352,7 +347,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -410,7 +405,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -461,7 +456,7 @@ extension MachOImage.ObjectiveC {
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         layoutReader: (UInt) -> ObjCMetadataTableRead<Layout>,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth

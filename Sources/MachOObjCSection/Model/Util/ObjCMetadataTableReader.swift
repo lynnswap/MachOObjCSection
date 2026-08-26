@@ -57,6 +57,34 @@ internal struct ObjCMetadataTableEntry<Element> {
 }
 
 internal enum ObjCMetadataTableReader {
+    static func readFileLayout<Layout, File: _FileIOProtocol>(
+        _ file: File,
+        offset: UInt64,
+        logicalOffset: Int? = nil,
+        as layoutType: Layout.Type
+    ) -> ObjCMetadataTableRead<Layout> {
+        switch readFile(
+            file,
+            offset: offset,
+            logicalOffset: logicalOffset,
+            count: 1,
+            as: layoutType
+        ) {
+        case .success(let entries):
+            guard let layout = entries.first?.value else {
+                return .failure(
+                    .unreadableFileRange(
+                        offset: offset,
+                        byteCount: MemoryLayout<Layout>.size
+                    )
+                )
+            }
+            return .success(layout)
+        case .failure(let failure):
+            return .failure(failure)
+        }
+    }
+
     static func readImageLayout<Layout>(
         address: UInt,
         as layoutType: Layout.Type

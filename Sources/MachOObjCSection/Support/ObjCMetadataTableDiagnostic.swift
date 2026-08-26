@@ -43,8 +43,10 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
     public enum Owner: Sendable, Equatable {
         /// One member table owned by a decoded metadata subject.
         case member(subject: MetadataSubject, kind: MemberKind)
+        /// One root pointer section in a file-backed image.
+        case fileRoot(section: RootSection, pointerWidth: PointerWidth)
         /// One root pointer section in the loaded image.
-        case loadedImageRoot(section: LoadedImageRootSection, pointerWidth: PointerWidth)
+        case loadedImageRoot(section: RootSection, pointerWidth: PointerWidth)
         /// One class layout reached through a loaded relationship pointer.
         case loadedRelationship(
             subject: MetadataSubject,
@@ -52,7 +54,7 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         )
     }
 
-    public enum LoadedImageRootSection: Sendable, Equatable {
+    public enum RootSection: Sendable, Equatable {
         case classList
         case nonLazyClassList
         case protocolList
@@ -60,6 +62,12 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case nonLazyCategoryList
         case categoryList2
     }
+
+    /// Source-compatible name for the loaded-image root section vocabulary.
+    public typealias LoadedImageRootSection = RootSection
+
+    /// Source-compatible name for the file-backed root section vocabulary.
+    public typealias FileRootSection = RootSection
 
     public enum PointerWidth: Int, Sendable, Equatable {
         case bits32 = 32
@@ -130,6 +138,11 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case invalidFileListOffset(UInt64)
         case unresolvedListPointer
         case missingListBackingData
+        case invalidFileRootOffset(sectionAddress: UInt64, sharedRegionStart: UInt64)
+        case missingFileRootBackingData(sectionAddress: UInt64)
+        case unresolvedFileRootPointer(rawValue: UInt64)
+        case invalidReferencedFileOffset(UInt64)
+        case missingReferencedFileBackingData(logicalOffset: UInt64)
         case unreadableFileHeader(offset: UInt64, byteCount: Int)
         case invalidEntryLogicalOffset
         case invalidMethodImplementationOffset

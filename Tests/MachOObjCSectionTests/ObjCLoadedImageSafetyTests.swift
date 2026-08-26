@@ -55,7 +55,7 @@ final class ObjCLoadedImageSafetyTests: XCTestCase {
         let token: UInt32 = 0x1000
         fixture.storeRootPointers32([token])
 
-        let result: ObjCLoadedRootTableRead<ObjCClass32> = fixture.machO.objc
+        let result: ObjCRootTableRead<ObjCClass32> = fixture.machO.objc
             .readRootTable(
                 tableAddress: fixture.address(at: fixture.tableOffset),
                 rawByteCount: UInt64(MemoryLayout<UInt32>.size),

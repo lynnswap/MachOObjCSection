@@ -109,6 +109,12 @@ private func consumeLoadedRootDiagnostics(
     image.objc.readRoots().tableDiagnostics
 }
 
+private func consumeFileRootDiagnostics(
+    file: MachOFile
+) -> [ObjCMetadataTableDiagnostic] {
+    file.objc.readRoots().tableDiagnostics
+}
+
 private func inspectTableDiagnostic(
     _ diagnostic: ObjCMetadataTableDiagnostic
 ) -> Int {
@@ -125,7 +131,8 @@ private func inspectTableDiagnostic(
              .classProperty:
             break
         }
-    case let .loadedImageRoot(section, pointerWidth):
+    case let .fileRoot(section, pointerWidth),
+         let .loadedImageRoot(section, pointerWidth):
         switch section {
         case .classList,
              .nonLazyClassList,
@@ -211,8 +218,15 @@ private func inspectTableDiagnostic(
     case let .invalidSectionByteCount(byteCount, pointerSize):
         _ = byteCount
         _ = pointerSize
-    case .invalidFileListOffset(let offset):
+    case .invalidFileListOffset(let offset),
+         .invalidReferencedFileOffset(let offset),
+         .missingReferencedFileBackingData(let offset):
         _ = offset
+    case let .invalidFileRootOffset(sectionAddress, sharedRegionStart):
+        _ = sectionAddress
+        _ = sharedRegionStart
+    case .missingFileRootBackingData(let sectionAddress):
+        _ = sectionAddress
     case let .invalidSectionCoordinates(
         sectionAddress,
         sectionSize,
@@ -237,7 +251,8 @@ private func inspectTableDiagnostic(
         _ = imageBase
         _ = imageVirtualMemoryAddress
         _ = sectionAddress
-    case .invalidPointer(let rawValue):
+    case .invalidPointer(let rawValue),
+         .unresolvedFileRootPointer(let rawValue):
         _ = rawValue
     case .missingReferencedImage(let address):
         _ = address
