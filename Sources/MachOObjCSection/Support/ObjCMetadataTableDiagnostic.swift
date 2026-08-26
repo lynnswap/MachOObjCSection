@@ -137,9 +137,11 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
             segmentFileOffset: UInt64,
             segmentFileSize: UInt64
         )
+        case missingImageBaseSegment
         case invalidLoadedSectionAddress(
             imageBase: UInt,
-            segmentVirtualMemoryOffset: UInt64
+            imageVirtualMemoryAddress: UInt64,
+            sectionAddress: UInt64
         )
         case invalidPointer(rawValue: UInt64)
         case missingReferencedImage(address: UInt)

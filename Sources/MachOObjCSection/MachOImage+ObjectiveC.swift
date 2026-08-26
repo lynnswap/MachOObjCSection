@@ -98,7 +98,8 @@ extension MachOImage.ObjectiveC {
     ) -> MachOImage.ObjCMethodLists? {
         guard let sectionOffset = Int(exactly: section.segmentVirtualMemoryOffset),
               let startAddress = section.loadedImageAddress(
-                relativeTo: UInt(bitPattern: machO.ptr)
+                relativeTo: UInt(bitPattern: machO.ptr),
+                imageVirtualMemoryAddress: section.segmentVirtualMemoryAddress
               ) else {
             return nil
         }

@@ -196,14 +196,17 @@ final class ObjCLoadedImageSafetyTests: XCTestCase {
     }
 
     func testRootCoordinatesDoNotUseUncheckedTextSlideAndRejectMaxDataCoordinates() throws {
-        let validData = try SyntheticLoadedObjCImageFixture(
+        let invalidImageBase = try SyntheticLoadedObjCImageFixture(
             section: .classList,
             sectionByteCount: 0,
             textVirtualMemoryAddress: .max
         )
-        let validResult = validData.machO.objc.readRoots()
-        XCTAssertEqual(validResult.classes64?.count, 0)
-        XCTAssertTrue(validResult.tableDiagnostics.isEmpty)
+        guard case let .invalidLoadedSectionAddress(
+            _, imageVirtualMemoryAddress, _
+        ) = invalidImageBase.machO.objc.readRoots().tableDiagnostics.first?.failure else {
+            return XCTFail("An unrepresentable image-base displacement must be typed failure")
+        }
+        XCTAssertEqual(imageVirtualMemoryAddress, UInt64.max)
 
         let invalidVirtualAddress = try SyntheticLoadedObjCImageFixture(
             section: .classList,
@@ -230,6 +233,24 @@ final class ObjCLoadedImageSafetyTests: XCTestCase {
             return XCTFail("An unrepresentable data-segment file offset must be typed failure")
         }
         XCTAssertEqual(segmentFileOffset, UInt64.max)
+    }
+
+    func testRootAddressUsesTextVMAddressAcrossDistinctDataSegment() throws {
+        let textAddress: UInt64 = 0x1_0000_0000
+        let fixture = try SyntheticLoadedObjCImageFixture(
+            section: .classList,
+            sectionByteCount: UInt64(MemoryLayout<UInt64>.size),
+            textVirtualMemoryAddress: textAddress,
+            dataVirtualMemoryAddress: textAddress + UInt64(getpagesize()),
+            sectionVirtualMemoryAddress: textAddress + UInt64(getpagesize())
+        )
+        fixture.store(Self.class64Layout(isa: 0x71), at: fixture.layoutOffset)
+        fixture.storeRootPointers64([fixture.address(at: fixture.layoutOffset)])
+
+        let result = fixture.machO.objc.readRoots()
+
+        XCTAssertEqual(result.classes64?.map(\.layout.isa), [0x71])
+        XCTAssertTrue(result.tableDiagnostics.isEmpty)
     }
 
     func testLoadedMemberHeadersDistinguishNullExactTruncatedAndEmpty() throws {
@@ -625,6 +646,7 @@ private final class SyntheticLoadedObjCImageFixture {
         sectionOffset pageIndex: Int = 1,
         textVirtualMemoryAddress: UInt64? = nil,
         dataVirtualMemoryAddress: UInt64? = nil,
+        sectionVirtualMemoryAddress: UInt64? = nil,
         dataFileOffset: UInt64 = 0
     ) throws {
         pageSize = Int(getpagesize())
@@ -640,6 +662,7 @@ private final class SyntheticLoadedObjCImageFixture {
             sectionByteCount: sectionByteCount,
             textVirtualMemoryAddress: textVirtualMemoryAddress,
             dataVirtualMemoryAddress: dataVirtualMemoryAddress,
+            sectionVirtualMemoryAddress: sectionVirtualMemoryAddress,
             dataFileOffset: dataFileOffset
         )
     }
@@ -681,6 +704,7 @@ private final class SyntheticLoadedObjCImageFixture {
         sectionByteCount: UInt64,
         textVirtualMemoryAddress: UInt64?,
         dataVirtualMemoryAddress: UInt64?,
+        sectionVirtualMemoryAddress: UInt64?,
         dataFileOffset: UInt64
     ) {
         let textSize = MemoryLayout<segment_command_64>.size
@@ -727,7 +751,7 @@ private final class SyntheticLoadedObjCImageFixture {
         var rootSection = section_64()
         Self.storeName(root.name, in: &rootSection.sectname)
         Self.storeName("__DATA", in: &rootSection.segname)
-        rootSection.addr = UInt64(address(at: tableOffset))
+        rootSection.addr = sectionVirtualMemoryAddress ?? UInt64(address(at: tableOffset))
         rootSection.size = sectionByteCount
         rootSection.align = 3
         store(rootSection, at: dataOffset + MemoryLayout<segment_command_64>.size)

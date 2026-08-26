@@ -143,7 +143,8 @@ private func inspectTableDiagnostic(
     _ = provenance.imageAddress
 
     switch diagnostic.failure {
-    case .unsupportedListEncoding:
+    case .unsupportedListEncoding,
+         .missingImageBaseSegment:
         break
     case .invalidListOffset(let offset),
          .invalidSignedElementCount(let offset):
@@ -199,9 +200,14 @@ private func inspectTableDiagnostic(
         _ = segmentSize
         _ = segmentFileOffset
         _ = segmentFileSize
-    case let .invalidLoadedSectionAddress(imageBase, segmentVirtualMemoryOffset):
+    case let .invalidLoadedSectionAddress(
+        imageBase,
+        imageVirtualMemoryAddress,
+        sectionAddress
+    ):
         _ = imageBase
-        _ = segmentVirtualMemoryOffset
+        _ = imageVirtualMemoryAddress
+        _ = sectionAddress
     case .invalidPointer(let rawValue):
         _ = rawValue
     case .missingReferencedImage(let address):

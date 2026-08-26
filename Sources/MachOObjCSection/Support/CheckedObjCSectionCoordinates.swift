@@ -11,15 +11,27 @@ internal struct CheckedObjCSectionCoordinates {
     let size: Int
     let fileOffset: Int
     let alignmentExponent: Int
+    let segmentVirtualMemoryAddress: UInt64
     let segmentVirtualMemoryOffset: UInt64
     let mappedFileOffset: UInt64
 
-    func loadedImageAddress(relativeTo imageBase: UInt) -> UInt? {
-        guard let displacement = UInt(exactly: segmentVirtualMemoryOffset) else {
-            return nil
+    func loadedImageAddress(
+        relativeTo imageBase: UInt,
+        imageVirtualMemoryAddress: UInt64
+    ) -> UInt? {
+        if address >= imageVirtualMemoryAddress {
+            guard let displacement = UInt(
+                exactly: address - imageVirtualMemoryAddress
+            ) else { return nil }
+            let (loadedAddress, overflow) = imageBase.addingReportingOverflow(displacement)
+            return overflow ? nil : loadedAddress
         }
-        let (address, overflow) = imageBase.addingReportingOverflow(displacement)
-        return overflow ? nil : address
+
+        guard let displacement = UInt(
+            exactly: imageVirtualMemoryAddress - address
+        ) else { return nil }
+        let (loadedAddress, overflow) = imageBase.subtractingReportingOverflow(displacement)
+        return overflow ? nil : loadedAddress
     }
 }
 
@@ -111,6 +123,7 @@ private func checkedObjCSectionCoordinates(
         size: size,
         fileOffset: fileOffset,
         alignmentExponent: alignmentExponent,
+        segmentVirtualMemoryAddress: segmentVirtualMemoryAddress,
         segmentVirtualMemoryOffset: virtualDelta,
         mappedFileOffset: mappedFileOffset
     )

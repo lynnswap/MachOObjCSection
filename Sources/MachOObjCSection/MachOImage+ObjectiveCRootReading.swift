@@ -320,9 +320,22 @@ extension MachOImage.ObjectiveC {
                 ]
             )
         }
+        guard let imageBaseSegment = machO.loadCommands.text64 else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .missingImageBaseSegment
+                    )
+                ]
+            )
+        }
         return readRootTable(
             section: coordinates,
             rawByteCount: section.layout.size,
+            imageVirtualMemoryAddress: imageBaseSegment.layout.vmaddr,
             pointerType: pointerType,
             layoutType: layoutType,
             root: root,
@@ -364,9 +377,22 @@ extension MachOImage.ObjectiveC {
                 ]
             )
         }
+        guard let imageBaseSegment = machO.loadCommands.text else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .missingImageBaseSegment
+                    )
+                ]
+            )
+        }
         return readRootTable(
             section: coordinates,
             rawByteCount: UInt64(section.layout.size),
+            imageVirtualMemoryAddress: UInt64(imageBaseSegment.layout.vmaddr),
             pointerType: pointerType,
             layoutType: layoutType,
             root: root,
@@ -378,6 +404,7 @@ extension MachOImage.ObjectiveC {
     private func readRootTable<Pointer, Layout, Value>(
         section: CheckedObjCSectionCoordinates,
         rawByteCount: UInt64,
+        imageVirtualMemoryAddress: UInt64,
         pointerType: Pointer.Type,
         layoutType: Layout.Type,
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
@@ -389,7 +416,10 @@ extension MachOImage.ObjectiveC {
             pointerWidth: pointerWidth
         )
         let imageBase = UInt(bitPattern: machO.ptr)
-        guard let tableAddress = section.loadedImageAddress(relativeTo: imageBase) else {
+        guard let tableAddress = section.loadedImageAddress(
+            relativeTo: imageBase,
+            imageVirtualMemoryAddress: imageVirtualMemoryAddress
+        ) else {
             return .init(
                 values: [],
                 diagnostics: [
@@ -398,7 +428,8 @@ extension MachOImage.ObjectiveC {
                         site: .table(.init()),
                         failure: .invalidLoadedSectionAddress(
                             imageBase: imageBase,
-                            segmentVirtualMemoryOffset: section.segmentVirtualMemoryOffset
+                            imageVirtualMemoryAddress: imageVirtualMemoryAddress,
+                            sectionAddress: section.address
                         )
                     )
                 ]
