@@ -168,12 +168,12 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection
     ) -> ObjCLoadedRootTableRead<ObjCClass64>? {
         guard machO.is64Bit,
-              let section = machO.findObjCSection64(for: sectionName) else {
+              let match = machO.findObjCSection64AndSegment(for: sectionName) else {
             return nil
         }
         return readRootTable(
-            rawAddress: section.layout.addr,
-            rawByteCount: section.layout.size,
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt64.self,
             layoutType: ObjCClass64.Layout.self,
             root: root,
@@ -188,12 +188,12 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection
     ) -> ObjCLoadedRootTableRead<ObjCClass32>? {
         guard !machO.is64Bit,
-              let section = machO.findObjCSection32(for: sectionName) else {
+              let match = machO.findObjCSection32AndSegment(for: sectionName) else {
             return nil
         }
         return readRootTable(
-            rawAddress: UInt64(section.layout.addr),
-            rawByteCount: UInt64(section.layout.size),
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt32.self,
             layoutType: ObjCClass32.Layout.self,
             root: root,
@@ -205,12 +205,12 @@ extension MachOImage.ObjectiveC {
 
     internal func readProtocols64() -> ObjCLoadedRootTableRead<ObjCProtocol64>? {
         guard machO.is64Bit,
-              let section = machO.findObjCSection64(for: .__objc_protolist) else {
+              let match = machO.findObjCSection64AndSegment(for: .__objc_protolist) else {
             return nil
         }
         return readRootTable(
-            rawAddress: section.layout.addr,
-            rawByteCount: section.layout.size,
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt64.self,
             layoutType: ObjCProtocol64.Layout.self,
             root: .protocolList,
@@ -222,12 +222,12 @@ extension MachOImage.ObjectiveC {
 
     internal func readProtocols32() -> ObjCLoadedRootTableRead<ObjCProtocol32>? {
         guard !machO.is64Bit,
-              let section = machO.findObjCSection32(for: .__objc_protolist) else {
+              let match = machO.findObjCSection32AndSegment(for: .__objc_protolist) else {
             return nil
         }
         return readRootTable(
-            rawAddress: UInt64(section.layout.addr),
-            rawByteCount: UInt64(section.layout.size),
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt32.self,
             layoutType: ObjCProtocol32.Layout.self,
             root: .protocolList,
@@ -243,12 +243,12 @@ extension MachOImage.ObjectiveC {
         isCatlist2: Bool
     ) -> ObjCLoadedRootTableRead<ObjCCategory64>? {
         guard machO.is64Bit,
-              let section = machO.findObjCSection64(for: sectionName) else {
+              let match = machO.findObjCSection64AndSegment(for: sectionName) else {
             return nil
         }
         return readRootTable(
-            rawAddress: section.layout.addr,
-            rawByteCount: section.layout.size,
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt64.self,
             layoutType: ObjCCategory64.Layout.self,
             root: root,
@@ -268,12 +268,12 @@ extension MachOImage.ObjectiveC {
         isCatlist2: Bool
     ) -> ObjCLoadedRootTableRead<ObjCCategory32>? {
         guard !machO.is64Bit,
-              let section = machO.findObjCSection32(for: sectionName) else {
+              let match = machO.findObjCSection32AndSegment(for: sectionName) else {
             return nil
         }
         return readRootTable(
-            rawAddress: UInt64(section.layout.addr),
-            rawByteCount: UInt64(section.layout.size),
+            section: match.section,
+            segment: match.segment,
             pointerType: UInt32.self,
             layoutType: ObjCCategory32.Layout.self,
             root: root,
@@ -288,7 +288,95 @@ extension MachOImage.ObjectiveC {
     }
 
     private func readRootTable<Pointer, Layout, Value>(
-        rawAddress: UInt64,
+        section: Section64,
+        segment: SegmentCommand64,
+        pointerType: Pointer.Type,
+        layoutType: Layout.Type,
+        root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
+        makeValue: (Layout, Int) -> Value
+    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
+            section: root,
+            pointerWidth: pointerWidth
+        )
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: segment) else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .invalidSectionCoordinates(
+                            sectionAddress: section.layout.addr,
+                            sectionSize: section.layout.size,
+                            sectionFileOffset: UInt64(section.layout.offset),
+                            segmentAddress: segment.layout.vmaddr,
+                            segmentSize: segment.layout.vmsize,
+                            segmentFileOffset: segment.layout.fileoff,
+                            segmentFileSize: segment.layout.filesize
+                        )
+                    )
+                ]
+            )
+        }
+        return readRootTable(
+            section: coordinates,
+            rawByteCount: section.layout.size,
+            pointerType: pointerType,
+            layoutType: layoutType,
+            root: root,
+            pointerWidth: pointerWidth,
+            makeValue: makeValue
+        )
+    }
+
+    private func readRootTable<Pointer, Layout, Value>(
+        section: Section,
+        segment: SegmentCommand,
+        pointerType: Pointer.Type,
+        layoutType: Layout.Type,
+        root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
+        makeValue: (Layout, Int) -> Value
+    ) -> ObjCLoadedRootTableRead<Value> where Pointer: FixedWidthInteger {
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
+            section: root,
+            pointerWidth: pointerWidth
+        )
+        guard let coordinates = checkedObjCSectionCoordinates(section, in: segment) else {
+            return .init(
+                values: [],
+                diagnostics: [
+                    .init(
+                        owner: owner,
+                        site: .table(.init()),
+                        failure: .invalidSectionCoordinates(
+                            sectionAddress: UInt64(section.layout.addr),
+                            sectionSize: UInt64(section.layout.size),
+                            sectionFileOffset: UInt64(section.layout.offset),
+                            segmentAddress: UInt64(segment.layout.vmaddr),
+                            segmentSize: UInt64(segment.layout.vmsize),
+                            segmentFileOffset: UInt64(segment.layout.fileoff),
+                            segmentFileSize: UInt64(segment.layout.filesize)
+                        )
+                    )
+                ]
+            )
+        }
+        return readRootTable(
+            section: coordinates,
+            rawByteCount: UInt64(section.layout.size),
+            pointerType: pointerType,
+            layoutType: layoutType,
+            root: root,
+            pointerWidth: pointerWidth,
+            makeValue: makeValue
+        )
+    }
+
+    private func readRootTable<Pointer, Layout, Value>(
+        section: CheckedObjCSectionCoordinates,
         rawByteCount: UInt64,
         pointerType: Pointer.Type,
         layoutType: Layout.Type,
@@ -300,29 +388,17 @@ extension MachOImage.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
-        guard let slide = machO.vmaddrSlide else {
+        let imageBase = UInt(bitPattern: machO.ptr)
+        guard let tableAddress = section.loadedImageAddress(relativeTo: imageBase) else {
             return .init(
                 values: [],
                 diagnostics: [
                     .init(
                         owner: owner,
                         site: .table(.init()),
-                        failure: .missingImageSlide
-                    )
-                ]
-            )
-        }
-        guard let unslidAddress = UInt(exactly: rawAddress),
-              let tableAddress = addingSignedDisplacement(slide, to: unslidAddress) else {
-            return .init(
-                values: [],
-                diagnostics: [
-                    .init(
-                        owner: owner,
-                        site: .table(.init()),
-                        failure: .invalidSectionAddress(
-                            rawAddress: rawAddress,
-                            slide: slide
+                        failure: .invalidLoadedSectionAddress(
+                            imageBase: imageBase,
+                            segmentVirtualMemoryOffset: section.segmentVirtualMemoryOffset
                         )
                     )
                 ]

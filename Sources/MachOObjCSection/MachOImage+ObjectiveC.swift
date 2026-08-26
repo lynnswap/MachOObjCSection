@@ -97,14 +97,12 @@ extension MachOImage.ObjectiveC {
         section: CheckedObjCSectionCoordinates
     ) -> MachOImage.ObjCMethodLists? {
         guard let sectionOffset = Int(exactly: section.segmentVirtualMemoryOffset),
-              let sectionDisplacement = UInt(exactly: section.segmentVirtualMemoryOffset) else {
+              let startAddress = section.loadedImageAddress(
+                relativeTo: UInt(bitPattern: machO.ptr)
+              ) else {
             return nil
         }
-        let (startAddress, addressOverflow) = UInt(bitPattern: machO.ptr).addingReportingOverflow(
-            sectionDisplacement
-        )
-        guard !addressOverflow,
-              let start = UnsafeRawPointer(bitPattern: startAddress) else { return nil }
+        guard let start = UnsafeRawPointer(bitPattern: startAddress) else { return nil }
 
         return .init(
             offset: sectionOffset,

@@ -195,6 +195,43 @@ final class ObjCLoadedImageSafetyTests: XCTestCase {
         XCTAssertEqual(maximum, ObjCMetadataReadLimits.maximumListEntries)
     }
 
+    func testRootCoordinatesDoNotUseUncheckedTextSlideAndRejectMaxDataCoordinates() throws {
+        let validData = try SyntheticLoadedObjCImageFixture(
+            section: .classList,
+            sectionByteCount: 0,
+            textVirtualMemoryAddress: .max
+        )
+        let validResult = validData.machO.objc.readRoots()
+        XCTAssertEqual(validResult.classes64?.count, 0)
+        XCTAssertTrue(validResult.tableDiagnostics.isEmpty)
+
+        let invalidVirtualAddress = try SyntheticLoadedObjCImageFixture(
+            section: .classList,
+            sectionByteCount: 0,
+            textVirtualMemoryAddress: .max,
+            dataVirtualMemoryAddress: .max
+        )
+        guard case let .invalidSectionCoordinates(
+            _, _, _, segmentAddress, _, _, _
+        ) = invalidVirtualAddress.machO.objc.readRoots().tableDiagnostics.first?.failure else {
+            return XCTFail("An unrepresentable data-segment VM address must be typed failure")
+        }
+        XCTAssertEqual(segmentAddress, UInt64.max)
+
+        let invalidFileOffset = try SyntheticLoadedObjCImageFixture(
+            section: .classList,
+            sectionByteCount: 0,
+            textVirtualMemoryAddress: .max,
+            dataFileOffset: .max
+        )
+        guard case let .invalidSectionCoordinates(
+            _, _, _, _, _, segmentFileOffset, _
+        ) = invalidFileOffset.machO.objc.readRoots().tableDiagnostics.first?.failure else {
+            return XCTFail("An unrepresentable data-segment file offset must be typed failure")
+        }
+        XCTAssertEqual(segmentFileOffset, UInt64.max)
+    }
+
     func testLoadedMemberHeadersDistinguishNullExactTruncatedAndEmpty() throws {
         let fixture = try SyntheticLoadedObjCImageFixture(
             section: .classList,
@@ -585,7 +622,10 @@ private final class SyntheticLoadedObjCImageFixture {
     init(
         section: RootSection,
         sectionByteCount: UInt64,
-        sectionOffset pageIndex: Int = 1
+        sectionOffset pageIndex: Int = 1,
+        textVirtualMemoryAddress: UInt64? = nil,
+        dataVirtualMemoryAddress: UInt64? = nil,
+        dataFileOffset: UInt64 = 0
     ) throws {
         pageSize = Int(getpagesize())
         mappingLength = pageSize * 5
@@ -595,7 +635,13 @@ private final class SyntheticLoadedObjCImageFixture {
         layoutOffset = pageSize * 2
         unreadableOffset = pageSize * Self.defaultUnreadablePageIndex
 
-        writeMachO64(root: section, sectionByteCount: sectionByteCount)
+        writeMachO64(
+            root: section,
+            sectionByteCount: sectionByteCount,
+            textVirtualMemoryAddress: textVirtualMemoryAddress,
+            dataVirtualMemoryAddress: dataVirtualMemoryAddress,
+            dataFileOffset: dataFileOffset
+        )
     }
 
     func address(at offset: Int) -> UInt {
@@ -632,7 +678,10 @@ private final class SyntheticLoadedObjCImageFixture {
 
     private func writeMachO64(
         root: RootSection,
-        sectionByteCount: UInt64
+        sectionByteCount: UInt64,
+        textVirtualMemoryAddress: UInt64?,
+        dataVirtualMemoryAddress: UInt64?,
+        dataFileOffset: UInt64
     ) {
         let textSize = MemoryLayout<segment_command_64>.size
         let dataSize = MemoryLayout<segment_command_64>.size
@@ -650,7 +699,7 @@ private final class SyntheticLoadedObjCImageFixture {
         text.cmd = UInt32(LC_SEGMENT_64)
         text.cmdsize = UInt32(textSize)
         Self.storeName("__TEXT", in: &text.segname)
-        text.vmaddr = UInt64(UInt(bitPattern: mapping))
+        text.vmaddr = textVirtualMemoryAddress ?? UInt64(UInt(bitPattern: mapping))
         text.vmsize = UInt64(mappingLength)
         text.filesize = UInt64(mappingLength)
         text.maxprot = VM_PROT_READ
@@ -661,9 +710,14 @@ private final class SyntheticLoadedObjCImageFixture {
         data.cmd = UInt32(LC_SEGMENT_64)
         data.cmdsize = UInt32(dataSize)
         Self.storeName("__DATA", in: &data.segname)
-        data.vmaddr = UInt64(UInt(bitPattern: mapping))
-        data.vmsize = UInt64(mappingLength)
-        data.filesize = UInt64(mappingLength)
+        data.vmaddr = dataVirtualMemoryAddress ?? UInt64(UInt(bitPattern: mapping))
+        let (requiredVirtualSize, virtualSizeOverflow) = UInt64(tableOffset)
+            .addingReportingOverflow(sectionByteCount)
+        data.vmsize = virtualSizeOverflow
+            ? .max
+            : max(UInt64(mappingLength), requiredVirtualSize)
+        data.fileoff = dataFileOffset
+        data.filesize = max(UInt64(mappingLength), sectionByteCount)
         data.maxprot = VM_PROT_READ
         data.initprot = VM_PROT_READ
         data.nsects = 1

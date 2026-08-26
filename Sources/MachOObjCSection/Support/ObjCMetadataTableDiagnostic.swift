@@ -128,8 +128,19 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case unreadableImageRange(address: UInt, byteCount: Int)
 
         case invalidSectionByteCount(byteCount: UInt64, pointerSize: Int)
-        case missingImageSlide
-        case invalidSectionAddress(rawAddress: UInt64, slide: Int)
+        case invalidSectionCoordinates(
+            sectionAddress: UInt64,
+            sectionSize: UInt64,
+            sectionFileOffset: UInt64,
+            segmentAddress: UInt64,
+            segmentSize: UInt64,
+            segmentFileOffset: UInt64,
+            segmentFileSize: UInt64
+        )
+        case invalidLoadedSectionAddress(
+            imageBase: UInt,
+            segmentVirtualMemoryOffset: UInt64
+        )
         case invalidPointer(rawValue: UInt64)
         case missingReferencedImage(address: UInt)
         case unreadableReferencedLayout(address: UInt, byteCount: Int)

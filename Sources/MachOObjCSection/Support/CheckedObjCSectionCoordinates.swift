@@ -13,6 +13,14 @@ internal struct CheckedObjCSectionCoordinates {
     let alignmentExponent: Int
     let segmentVirtualMemoryOffset: UInt64
     let mappedFileOffset: UInt64
+
+    func loadedImageAddress(relativeTo imageBase: UInt) -> UInt? {
+        guard let displacement = UInt(exactly: segmentVirtualMemoryOffset) else {
+            return nil
+        }
+        let (address, overflow) = imageBase.addingReportingOverflow(displacement)
+        return overflow ? nil : address
+    }
 }
 
 @inline(__always)
