@@ -290,7 +290,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -347,7 +347,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -405,7 +405,7 @@ extension MachOImage.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.LoadedImageRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -456,7 +456,7 @@ extension MachOImage.ObjectiveC {
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         layoutReader: (UInt) -> ObjCMetadataTableRead<Layout>,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: FixedWidthInteger {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.loadedImageRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -533,7 +533,8 @@ extension MachOImage.ObjectiveC {
                 logicalOffset: entry.logicalOffset,
                 imageAddress: entry.address
             )
-            guard let rawPointer = UInt64(exactly: entry.value), rawPointer != 0 else {
+            let rawPointer = entry.value.rootPointerValue
+            guard rawPointer != 0 else {
                 diagnostics.append(
                     .init(
                         owner: owner,
@@ -541,9 +542,7 @@ extension MachOImage.ObjectiveC {
                             index: entry.index,
                             provenance: entryProvenance
                         ),
-                        failure: .invalidPointer(
-                            rawValue: UInt64(exactly: entry.value) ?? 0
-                        )
+                        failure: .invalidPointer(rawValue: rawPointer)
                     )
                 )
                 continue

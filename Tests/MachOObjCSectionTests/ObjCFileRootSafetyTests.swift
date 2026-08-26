@@ -4,6 +4,41 @@ import MachOKit
 import XCTest
 
 final class ObjCFileRootSafetyTests: XCTestCase {
+    func testCacheLogicalOffsetUsesMainSharedRegionDomain() {
+        let sharedRegionStart: UInt64 = 0x1_0000_0000
+        XCTAssertEqual(
+            checkedFileRootLogicalOffset(
+                sectionAddress: sharedRegionStart + 0x400,
+                sectionFileOffset: 0x900,
+                cacheSharedRegionStart: sharedRegionStart
+            ),
+            0x400
+        )
+        XCTAssertNil(
+            checkedFileRootLogicalOffset(
+                sectionAddress: sharedRegionStart - 1,
+                sectionFileOffset: 0x900,
+                cacheSharedRegionStart: sharedRegionStart
+            )
+        )
+        XCTAssertNil(
+            checkedFileRootLogicalOffset(
+                sectionAddress: sharedRegionStart + UInt64(UInt32.max),
+                sectionFileOffset: 0x900,
+                cacheSharedRegionStart: sharedRegionStart,
+                maximumIntValue: UInt64(Int32.max)
+            )
+        )
+        XCTAssertEqual(
+            checkedFileRootLogicalOffset(
+                sectionAddress: .max,
+                sectionFileOffset: 0x900,
+                cacheSharedRegionStart: nil
+            ),
+            0x900
+        )
+    }
+
     func testAllFileRootSectionsUseTheSharedCheckedReaderFor32And64() throws {
         for architecture in FileRootArchitecture.allCases {
             for root in FileRootFixtureSection.allCases {
@@ -248,7 +283,7 @@ final class ObjCFileRootSafetyTests: XCTestCase {
             let mismatch = try FileRootFixture(
                 architecture: architecture,
                 root: .classList,
-                sectionByteCount: UInt64(architecture.pointerSize),
+                sectionByteCount: UInt64(architecture.pointerSize + 1),
                 sectionFileOffset: FileRootFixture.tableOffset + architecture.pointerSize
             )
             guard case .invalidSectionCoordinates =

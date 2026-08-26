@@ -6,6 +6,21 @@
 import Foundation
 @_spi(Support) import MachOKit
 
+@inline(__always)
+internal func checkedFileRootLogicalOffset(
+    sectionAddress: UInt64,
+    sectionFileOffset: Int,
+    cacheSharedRegionStart: UInt64?,
+    maximumIntValue: UInt64 = UInt64(Int.max)
+) -> Int? {
+    guard let cacheSharedRegionStart else { return sectionFileOffset }
+    guard let rawOffset = checkedCacheOffset(
+        address: sectionAddress,
+        sharedRegionStart: cacheSharedRegionStart
+    ), rawOffset <= maximumIntValue else { return nil }
+    return Int(exactly: rawOffset)
+}
+
 /// The Objective-C root metadata discovered in one file-backed Mach-O image.
 ///
 /// Existing root properties remain the compatibility surface. Diagnostics SPI
@@ -69,18 +84,6 @@ public struct ObjCFileRootReadResult {
         self.categories2_32 = categories2_32
         self.tableDiagnostics = tableDiagnostics
     }
-}
-
-internal protocol ObjCFileRootPointer: FixedWidthInteger, UnsignedInteger {
-    var fileRootPointerValue: UInt64 { get }
-}
-
-extension UInt32: ObjCFileRootPointer {
-    internal var fileRootPointerValue: UInt64 { UInt64(self) }
-}
-
-extension UInt64: ObjCFileRootPointer {
-    internal var fileRootPointerValue: UInt64 { self }
 }
 
 extension MachOFile.ObjectiveC {
@@ -376,7 +379,7 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCFileRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -427,7 +430,7 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCFileRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
@@ -509,11 +512,23 @@ extension MachOFile.ObjectiveC {
         root: ObjCMetadataTableDiagnostic.FileRootSection,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
         makeValue: (Layout, Int) -> Value
-    ) -> ObjCRootTableRead<Value> where Pointer: ObjCFileRootPointer {
+    ) -> ObjCRootTableRead<Value> where Pointer: ObjCRootPointer {
         let owner = ObjCMetadataTableDiagnostic.Owner.fileRoot(
             section: root,
             pointerWidth: pointerWidth
         )
+        // A removed/coalesced empty section can retain offset zero at a segment
+        // boundary. It is complete without a linear-mapping or backing lookup.
+        guard rawByteCount > 0 else {
+            return .init(values: [], diagnostics: [])
+        }
+        if let fileMappingFailure {
+            return tableFailure(
+                owner: owner,
+                provenance: .init(),
+                failure: fileMappingFailure
+            )
+        }
         let pointerSize = MemoryLayout<Pointer>.size
         guard rawByteCount.isMultiple(of: UInt64(pointerSize)) else {
             return tableFailure(
@@ -552,19 +567,6 @@ extension MachOFile.ObjectiveC {
             )
         }
 
-        // Empty sections are a complete result and do not require any backing
-        // file or cache mapping.
-        guard count > 0 else {
-            return .init(values: [], diagnostics: [])
-        }
-        if let fileMappingFailure {
-            return tableFailure(
-                owner: owner,
-                provenance: .init(),
-                failure: fileMappingFailure
-            )
-        }
-
         let logicalOffset: Int
         if machO.isLoadedFromDyldCache {
             guard let cache = machO.cache else {
@@ -577,11 +579,11 @@ extension MachOFile.ObjectiveC {
                 )
             }
             let sharedRegionStart = cache.mainCacheHeader.sharedRegionStart
-            guard let rawLogicalOffset = checkedCacheOffset(
-                    address: section.address,
-                    sharedRegionStart: sharedRegionStart
-                  ),
-                  let exactLogicalOffset = Int(exactly: rawLogicalOffset) else {
+            guard let exactLogicalOffset = checkedFileRootLogicalOffset(
+                sectionAddress: section.address,
+                sectionFileOffset: section.fileOffset,
+                cacheSharedRegionStart: sharedRegionStart
+            ) else {
                 return tableFailure(
                     owner: owner,
                     provenance: .init(),
@@ -599,6 +601,8 @@ extension MachOFile.ObjectiveC {
         let unresolvedProvenance = ObjCMetadataTableDiagnostic.Provenance(
             logicalOffset: logicalOffset
         )
+        // This offset-domain API owns both ordinary headerStartOffset and the
+        // main-cache-relative to actual subcache-local physical mapping.
         guard let rawLogicalOffset = UInt64(exactly: logicalOffset),
               let (file, fileOffset) = machO.fileHandleAndOffset(
                 forOffset: rawLogicalOffset
@@ -643,7 +647,7 @@ extension MachOFile.ObjectiveC {
                 logicalOffset: entry.logicalOffset,
                 fileOffset: entry.fileOffset
             )
-            let rawPointer = entry.value.fileRootPointerValue
+            let rawPointer = entry.value.rootPointerValue
             guard rawPointer != 0 else {
                 diagnostics.append(
                     entryFailure(
