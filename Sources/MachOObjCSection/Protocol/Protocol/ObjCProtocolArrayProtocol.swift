@@ -40,21 +40,40 @@ extension ObjCProtocolArrayProtocol {
         ObjCProtocolList,
         ObjCProtocolRelativeListList
     > {
+        Self.readLists(
+            ObjCLoadedListArrayReader.storage(
+                fromTaggedOffset: offset,
+                in: machO
+            ),
+            in: machO
+        )
+    }
+
+    internal static func readLists(
+        _ storageRead: ObjCLoadedListArrayStorageRead,
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCProtocolList,
+        ObjCProtocolRelativeListList
+    > {
         if machO.is64Bit {
             return readLists(
+                storageRead,
                 in: machO,
                 pointerType: UInt64.self,
                 pointerWidth: .bits64
             )
         }
         return readLists(
+            storageRead,
             in: machO,
             pointerType: UInt32.self,
             pointerWidth: .bits32
         )
     }
 
-    private func readLists<Pointer: ObjCMetadataPointer>(
+    private static func readLists<Pointer: ObjCMetadataPointer>(
+        _ storageRead: ObjCLoadedListArrayStorageRead,
         in machO: MachOImage,
         pointerType: Pointer.Type,
         pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth
@@ -67,10 +86,7 @@ extension ObjCProtocolArrayProtocol {
             pointerWidth: pointerWidth
         )
         return ObjCLoadedListArrayReader.read(
-            ObjCLoadedListArrayReader.storage(
-                fromTaggedOffset: offset,
-                in: machO
-            ),
+            storageRead,
             in: machO,
             pointerType: pointerType,
             owner: owner,

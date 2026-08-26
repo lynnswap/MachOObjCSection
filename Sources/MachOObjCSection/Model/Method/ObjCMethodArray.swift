@@ -33,24 +33,48 @@ extension ObjCMethodArray {
         ObjCMethodList,
         ObjCMethodRelativeListList
     > {
-        if is64Bit {
-            return readLists(
-                in: machO,
-                pointerType: UInt64.self,
-                pointerWidth: .bits64
-            )
-        }
-        return readLists(
+        Self.readLists(
+            ObjCLoadedListArrayReader.storage(
+                fromTaggedOffset: offset,
+                in: machO
+            ),
             in: machO,
-            pointerType: UInt32.self,
-            pointerWidth: .bits32
+            is64Bit: is64Bit
         )
     }
 
-    private func readLists<Pointer: ObjCMetadataPointer>(
+    internal static func readLists(
+        _ storageRead: ObjCLoadedListArrayStorageRead,
+        in machO: MachOImage,
+        is64Bit: Bool
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCMethodList,
+        ObjCMethodRelativeListList
+    > {
+        if is64Bit {
+            return readLists(
+                storageRead,
+                in: machO,
+                pointerType: UInt64.self,
+                pointerWidth: .bits64,
+                is64Bit: true
+            )
+        }
+        return readLists(
+            storageRead,
+            in: machO,
+            pointerType: UInt32.self,
+            pointerWidth: .bits32,
+            is64Bit: false
+        )
+    }
+
+    private static func readLists<Pointer: ObjCMetadataPointer>(
+        _ storageRead: ObjCLoadedListArrayStorageRead,
         in machO: MachOImage,
         pointerType: Pointer.Type,
-        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth
+        pointerWidth: ObjCMetadataTableDiagnostic.PointerWidth,
+        is64Bit: Bool
     ) -> ObjCLoadedListArrayReadResult<
         ObjCMethodList,
         ObjCMethodRelativeListList
@@ -60,10 +84,7 @@ extension ObjCMethodArray {
             pointerWidth: pointerWidth
         )
         return ObjCLoadedListArrayReader.read(
-            ObjCLoadedListArrayReader.storage(
-                fromTaggedOffset: offset,
-                in: machO
-            ),
+            storageRead,
             in: machO,
             pointerType: pointerType,
             owner: owner,

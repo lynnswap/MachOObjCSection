@@ -77,6 +77,17 @@ extension ObjCRelativeListFailure.Reason {
 }
 
 extension ObjCProtocolRelativeListListProtocol {
+    public func list(
+        in machO: MachOImage,
+        for entry: Entry
+    ) -> (MachOImage, List)? {
+        guard case let .resolved(source, list) = resolveLoadedList(
+            in: machO,
+            for: entry
+        ) else { return nil }
+        return (source, list)
+    }
+
     public func lists(in machO: MachOImage) -> [(MachOImage, List)] {
         resolveLists(in: machO).resolvedValues
     }
@@ -141,30 +152,63 @@ extension ObjCProtocolRelativeListListProtocol {
             imageLoadResolver: imageLoadResolver,
             imageResolver: imageResolver,
             makeList: { targetMachO, pointer, listOffset, _ in
-                let address = UInt(bitPattern: pointer)
-                let header: List.Header
-                switch ObjCMetadataTableReader.readImageLayout(
-                    address: address,
-                    as: List.Header.self
-                ) {
-                case .success(let value):
-                    header = value
-                case .failure:
-                    return .failure(
-                        .unreadableImageHeader(
-                            address: address,
-                            byteCount: MemoryLayout<List.Header>.size
-                        )
-                    )
-                }
-                let list = List(offset: listOffset, header: header)
-                switch list.readProtocols(in: targetMachO) {
-                case .success:
-                    return .success(list)
-                case .failure(let failure):
-                    return .failure(failure.relativeListReason)
-                }
+                readLoadedList(
+                    in: targetMachO,
+                    pointer: pointer,
+                    listOffset: listOffset
+                )
             }
         )
+    }
+
+    internal func resolveLoadedList(
+        in machO: MachOImage,
+        for entry: Entry,
+        imageLoadResolver: (Int) -> ObjCImageLoadState = defaultRelativeImageLoadState,
+        imageResolver: (Int) -> MachOImage? = defaultRelativeImage
+    ) -> ObjCRelativeListEntryResolution<MachOImage, List> {
+        resolveRelativeList(
+            in: machO,
+            for: entry,
+            imageLoadResolver: imageLoadResolver,
+            imageResolver: imageResolver,
+            makeList: { targetMachO, pointer, listOffset, _ in
+                readLoadedList(
+                    in: targetMachO,
+                    pointer: pointer,
+                    listOffset: listOffset
+                )
+            }
+        )
+    }
+
+    private func readLoadedList(
+        in targetMachO: MachOImage,
+        pointer: UnsafeRawPointer,
+        listOffset: Int
+    ) -> Result<List, ObjCRelativeListFailure.Reason> {
+        let address = UInt(bitPattern: pointer)
+        let header: List.Header
+        switch ObjCMetadataTableReader.readImageLayout(
+            address: address,
+            as: List.Header.self
+        ) {
+        case .success(let value):
+            header = value
+        case .failure:
+            return .failure(
+                .unreadableImageHeader(
+                    address: address,
+                    byteCount: MemoryLayout<List.Header>.size
+                )
+            )
+        }
+        let list = List(offset: listOffset, header: header)
+        switch list.readProtocols(in: targetMachO) {
+        case .success:
+            return .success(list)
+        case .failure(let failure):
+            return .failure(failure.relativeListReason)
+        }
     }
 }

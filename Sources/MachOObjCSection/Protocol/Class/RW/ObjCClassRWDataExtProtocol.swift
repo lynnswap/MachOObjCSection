@@ -61,15 +61,30 @@ extension ObjCClassRWDataExtProtocol {
     }
 
     public func methodList(in machO: MachOImage) -> ObjCMethodArray? {
-        readMethodArray(in: machO).value
+        guard let storage = readListArrayStorage(layout.methods, in: machO).value else {
+            return nil
+        }
+        return ObjCMethodArray(
+            offset: storage.taggedOffset,
+            is64Bit: machO.is64Bit
+        )
     }
 
     public func propertyList(in machO: MachOImage) -> ObjCPropertyArray? {
-        readPropertyArray(in: machO).value
+        guard let storage = readListArrayStorage(layout.properties, in: machO).value else {
+            return nil
+        }
+        return ObjCPropertyArray(
+            offset: storage.taggedOffset,
+            is64Bit: machO.is64Bit
+        )
     }
 
     public func protocolList(in machO: MachOImage) -> ObjCProtocolArray? {
-        readProtocolArray(in: machO).value
+        guard let storage = readListArrayStorage(layout.protocols, in: machO).value else {
+            return nil
+        }
+        return ObjCProtocolArray(offset: storage.taggedOffset)
     }
 
     /// Reads the method list-array field and retains recoverable diagnostics.
@@ -80,23 +95,11 @@ extension ObjCClassRWDataExtProtocol {
         ObjCMethodList,
         ObjCMethodRelativeListList
     > {
-        let owner = loadedListArrayOwner(kind: .method, in: machO)
-        switch readMethodArray(in: machO) {
-        case .absent:
-            return .init(representation: nil)
-        case let .failure(provenance, reason):
-            return ObjCLoadedListArrayReader.tableFailure(
-                representation: listArrayRepresentation(
-                    layout.methods,
-                    in: machO
-                ),
-                owner: owner,
-                provenance: provenance,
-                failure: reason
-            )
-        case .value(let array):
-            return array.readLists(in: machO)
-        }
+        ObjCMethodArray.readLists(
+            readListArrayStorage(layout.methods, in: machO),
+            in: machO,
+            is64Bit: machO.is64Bit
+        )
     }
 
     /// Reads the property list-array field and retains recoverable diagnostics.
@@ -107,23 +110,11 @@ extension ObjCClassRWDataExtProtocol {
         ObjCPropertyList,
         ObjCPropertyRelativeListList
     > {
-        let owner = loadedListArrayOwner(kind: .property, in: machO)
-        switch readPropertyArray(in: machO) {
-        case .absent:
-            return .init(representation: nil)
-        case let .failure(provenance, reason):
-            return ObjCLoadedListArrayReader.tableFailure(
-                representation: listArrayRepresentation(
-                    layout.properties,
-                    in: machO
-                ),
-                owner: owner,
-                provenance: provenance,
-                failure: reason
-            )
-        case .value(let array):
-            return array.readLists(in: machO)
-        }
+        ObjCPropertyArray.readLists(
+            readListArrayStorage(layout.properties, in: machO),
+            in: machO,
+            is64Bit: machO.is64Bit
+        )
     }
 
     /// Reads the protocol list-array field and retains recoverable diagnostics.
@@ -134,62 +125,20 @@ extension ObjCClassRWDataExtProtocol {
         ObjCProtocolArray.ObjCProtocolList,
         ObjCProtocolArray.ObjCProtocolRelativeListList
     > {
-        let owner = loadedListArrayOwner(kind: .protocol, in: machO)
-        switch readProtocolArray(in: machO) {
-        case .absent:
-            return .init(representation: nil)
-        case let .failure(provenance, reason):
-            return ObjCLoadedListArrayReader.tableFailure(
-                representation: listArrayRepresentation(
-                    layout.protocols,
-                    in: machO
-                ),
-                owner: owner,
-                provenance: provenance,
-                failure: reason
-            )
-        case .value(let array):
-            return array.readLists(in: machO)
-        }
-    }
-
-    private func readMethodArray(
-        in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCMethodArray> {
-        readListArrayStorage(layout.methods, in: machO).map { storage in
-            ObjCMethodArray(
-                offset: storage.taggedOffset,
-                is64Bit: machO.is64Bit
-            )
-        }
-    }
-
-    private func readPropertyArray(
-        in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCPropertyArray> {
-        readListArrayStorage(layout.properties, in: machO).map { storage in
-            ObjCPropertyArray(
-                offset: storage.taggedOffset,
-                is64Bit: machO.is64Bit
-            )
-        }
-    }
-
-    private func readProtocolArray(
-        in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCProtocolArray> {
-        readListArrayStorage(layout.protocols, in: machO).map { storage in
-            ObjCProtocolArray(offset: storage.taggedOffset)
-        }
+        ObjCProtocolArray.readLists(
+            readListArrayStorage(layout.protocols, in: machO),
+            in: machO
+        )
     }
 
     private func readListArrayStorage(
         _ rawPointer: Layout.Pointer,
         in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCLoadedListArrayStorage> {
+    ) -> ObjCLoadedListArrayStorageRead {
         let diagnosticRawValue = UInt64(truncatingIfNeeded: rawPointer)
         guard let rawValue = UInt64(exactly: rawPointer) else {
             return .failure(
+                representation: nil,
                 provenance: .init(),
                 reason: .invalidPointer(rawValue: diagnosticRawValue)
             )
@@ -202,6 +151,7 @@ extension ObjCClassRWDataExtProtocol {
         }
         guard let rawValue32 = UInt32(exactly: rawValue) else {
             return .failure(
+                representation: nil,
                 provenance: .init(),
                 reason: .invalidPointer(rawValue: rawValue)
             )
@@ -211,28 +161,6 @@ extension ObjCClassRWDataExtProtocol {
             in: machO
         )
     }
-
-    private func listArrayRepresentation(
-        _ rawPointer: Layout.Pointer,
-        in machO: MachOImage
-    ) -> ObjCLoadedListArrayRepresentation? {
-        guard let rawValue = UInt64(exactly: rawPointer) else { return nil }
-        return ObjCLoadedListArrayReader.representation(
-            forRawValue: rawValue,
-            in: machO
-        )
-    }
-
-    private func loadedListArrayOwner(
-        kind: ObjCMetadataTableDiagnostic.RWExtensionListKind,
-        in machO: MachOImage
-    ) -> ObjCMetadataTableDiagnostic.Owner {
-        .loadedRWExtension(
-            kind: kind,
-            pointerWidth: machO.is64Bit ? .bits64 : .bits32
-        )
-    }
-
 
     public func demangledName(in machO: MachOImage) -> String? {
         guard layout.demangledName > 0 else { return nil }
@@ -244,20 +172,5 @@ extension ObjCClassRWDataExtProtocol {
             cString: ptr.assumingMemoryBound(to: CChar.self),
             encoding: .utf8
         )
-    }
-}
-
-extension ObjCMetadataReferenceRead {
-    fileprivate func map<MappedValue>(
-        _ transform: (Value) -> MappedValue
-    ) -> ObjCMetadataReferenceRead<MappedValue> {
-        switch self {
-        case .absent:
-            return .absent
-        case .value(let value):
-            return .value(transform(value))
-        case let .failure(provenance, reason):
-            return .failure(provenance: provenance, reason: reason)
-        }
     }
 }

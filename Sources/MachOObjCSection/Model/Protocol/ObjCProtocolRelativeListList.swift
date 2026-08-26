@@ -32,37 +32,6 @@ extension ObjCProtocolRelativeListList64 {
         self.header = ptr.loadUnaligned(as: Header.self)
     }
 
-    public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        guard let offset = addingSignedDisplacement(
-                entry.signedListOffset,
-                to: entry.offset
-              ),
-              let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
-              let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
-
-        guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
-            return nil
-        }
-
-#if canImport(MachO)
-        guard let cache: DyldCacheLoaded = .current else { return nil }
-        guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
-
-        guard let listOffset = signedDisplacement(
-            from: UInt(bitPattern: machO.ptr),
-            to: address
-        ) else { return nil }
-        let list = List(
-            ptr: ptr,
-            offset: listOffset
-        )
-
-        return (machO, list)
-#else
-        return nil
-#endif
-    }
-
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
         guard let relativeOffset = addingSignedDisplacement(
                 entry.signedListOffset,
@@ -111,37 +80,6 @@ extension ObjCProtocolRelativeListList32 {
     ) {
         self.offset = offset
         self.header = ptr.loadUnaligned(as: Header.self)
-    }
-
-    public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        guard let offset = addingSignedDisplacement(
-                entry.signedListOffset,
-                to: entry.offset
-              ),
-              let address = addingSignedDisplacement(offset, to: UInt(bitPattern: machO.ptr)),
-              let ptr = UnsafeRawPointer(bitPattern: address) else { return nil }
-
-        guard isPointerSafelyReadable(ptr, length: MemoryLayout<List.Header>.size) else {
-            return nil
-        }
-
-#if canImport(MachO)
-        guard let cache: DyldCacheLoaded = .current else { return nil }
-        guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
-
-        guard let listOffset = signedDisplacement(
-            from: UInt(bitPattern: machO.ptr),
-            to: address
-        ) else { return nil }
-        let list = List(
-            ptr: ptr,
-            offset: listOffset
-        )
-
-        return (machO, list)
-#else
-        return nil
-#endif
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {

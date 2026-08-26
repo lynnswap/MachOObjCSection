@@ -59,23 +59,28 @@ internal struct ObjCLoadedListArrayStorage {
     let provenance: ObjCMetadataTableDiagnostic.Provenance
 }
 
+internal enum ObjCLoadedListArrayStorageRead {
+    case absent
+    case value(ObjCLoadedListArrayStorage)
+    case failure(
+        representation: ObjCLoadedListArrayRepresentation?,
+        provenance: ObjCMetadataTableDiagnostic.Provenance,
+        reason: ObjCMetadataTableDiagnostic.Failure
+    )
+
+    var value: ObjCLoadedListArrayStorage? {
+        guard case .value(let storage) = self else { return nil }
+        return storage
+    }
+}
+
 internal enum ObjCLoadedListArrayReader {
     private static let tagMask: UInt64 = 3
-
-    static func representation(
-        forRawValue rawValue: UInt64,
-        in machO: MachOImage
-    ) -> ObjCLoadedListArrayRepresentation? {
-        guard rawValue != 0 else { return nil }
-        return representation(
-            forTag: machO.stripPointerTags(of: rawValue) & tagMask
-        )
-    }
 
     static func storage<Pointer: ObjCMetadataPointer>(
         from rawPointer: Pointer,
         in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCLoadedListArrayStorage> {
+    ) -> ObjCLoadedListArrayStorageRead {
         let rawValue = rawPointer.metadataPointerValue
         guard rawValue != 0 else { return .absent }
 
@@ -83,6 +88,7 @@ internal enum ObjCLoadedListArrayReader {
         let rawTag = strippedValue & tagMask
         guard let representation = representation(forTag: rawTag) else {
             return .failure(
+                representation: nil,
                 provenance: .init(),
                 reason: .unsupportedListEncoding
             )
@@ -92,6 +98,7 @@ internal enum ObjCLoadedListArrayReader {
         guard payload != 0,
               let address = UInt(exactly: payload) else {
             return .failure(
+                representation: representation,
                 provenance: .init(),
                 reason: .invalidPointer(rawValue: rawValue)
             )
@@ -102,6 +109,7 @@ internal enum ObjCLoadedListArrayReader {
               offset.isMultiple(of: 4),
               let tag = Int(exactly: rawTag) else {
             return .failure(
+                representation: representation,
                 provenance: .init(imageAddress: address),
                 reason: .invalidEntryArithmetic(
                     baseAddress: imageBase,
@@ -126,10 +134,11 @@ internal enum ObjCLoadedListArrayReader {
     static func storage(
         fromTaggedOffset taggedOffset: Int,
         in machO: MachOImage
-    ) -> ObjCMetadataReferenceRead<ObjCLoadedListArrayStorage> {
+    ) -> ObjCLoadedListArrayStorageRead {
         let tag = taggedOffset & Int(tagMask)
         guard let representation = representation(forTag: UInt64(tag)) else {
             return .failure(
+                representation: nil,
                 provenance: .init(logicalOffset: taggedOffset),
                 reason: .unsupportedListEncoding
             )
@@ -140,6 +149,7 @@ internal enum ObjCLoadedListArrayReader {
               address != 0,
               address.isMultiple(of: 4) else {
             return .failure(
+                representation: representation,
                 provenance: .init(logicalOffset: offset),
                 reason: .invalidListOffset(offset)
             )
@@ -159,7 +169,7 @@ internal enum ObjCLoadedListArrayReader {
     }
 
     static func read<Pointer, List, RelativeList>(
-        _ storageRead: ObjCMetadataReferenceRead<ObjCLoadedListArrayStorage>,
+        _ storageRead: ObjCLoadedListArrayStorageRead,
         in machO: MachOImage,
         pointerType: Pointer.Type,
         owner: ObjCMetadataTableDiagnostic.Owner,
@@ -172,9 +182,9 @@ internal enum ObjCLoadedListArrayReader {
         switch storageRead {
         case .absent:
             return .init(representation: nil)
-        case let .failure(provenance, reason):
+        case let .failure(representation, provenance, reason):
             return .init(
-                representation: nil,
+                representation: representation,
                 tableDiagnostics: [
                     .init(
                         owner: owner,
@@ -485,14 +495,16 @@ internal enum ObjCLoadedListArrayReader {
         in machO: MachOImage,
         owner: ObjCMetadataTableDiagnostic.Owner
     ) -> ObjCMetadataTableDiagnostic {
-        let provenance = machO.metadataTableProvenance(
-            at: failure.diagnosticOffset
-        )
+        let provenanceOffset: Int
         let site: ObjCMetadataTableDiagnostic.Site
         switch failure.location {
         case .table:
+            provenanceOffset = failure.outerListOffset
+            let provenance = machO.metadataTableProvenance(at: provenanceOffset)
             site = .table(provenance)
-        case .entry(let index, _, _):
+        case .entry(let index, _, let entryOffset):
+            provenanceOffset = entryOffset
+            let provenance = machO.metadataTableProvenance(at: provenanceOffset)
             site = .entry(index: index, provenance: provenance)
         }
         return .init(

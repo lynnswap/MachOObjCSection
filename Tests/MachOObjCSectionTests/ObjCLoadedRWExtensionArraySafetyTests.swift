@@ -294,8 +294,419 @@ final class ObjCLoadedRWExtensionArraySafetyTests: XCTestCase {
         }
     }
 
+    func testKnownRepresentationSurvivesDirectStorageArithmeticFailure() throws {
+        let fixture = try LoadedRWExtensionFixture()
+        let invalidOffset = Int.min | 1
+        let result = ObjCMethodArray(
+            offset: invalidOffset,
+            is64Bit: true
+        ).readLists(in: fixture.machO)
+
+        XCTAssertEqual(result.representation, .array)
+        XCTAssertTrue(result.entries.isEmpty)
+        guard case .invalidListOffset(Int.min) = result.tableDiagnostics.first?.failure else {
+            return XCTFail("A known array tag must survive address failure")
+        }
+    }
+
+    func testSingleAndRelativeHeadersAcceptExactBoundaryAndRejectTruncation() throws {
+        let singleExactFixture = try LoadedRWExtensionFixture()
+        let singleExactOffset = singleExactFixture.unreadableOffset
+            - MemoryLayout<EntrySizeListHeader>.size
+        singleExactFixture.store(Self.emptyMemberHeader(), at: singleExactOffset)
+        try singleExactFixture.protectUnreadablePage()
+        let singleExact = singleExactFixture.extensionData(
+            methods: singleExactFixture.address64(at: singleExactOffset)
+        ).readMethodLists(in: singleExactFixture.machO)
+        XCTAssertEqual(singleExact.representation, .single)
+        XCTAssertEqual(singleExact.entries.count, 1)
+        XCTAssertTrue(singleExact.tableDiagnostics.isEmpty)
+
+        let singleTruncatedFixture = try LoadedRWExtensionFixture()
+        let singleTruncatedOffset = singleTruncatedFixture.unreadableOffset
+            - MemoryLayout<UInt32>.size
+        singleTruncatedFixture.store(Self.emptyMemberHeader(), at: singleTruncatedOffset)
+        try singleTruncatedFixture.protectUnreadablePage()
+        let singleTruncated = singleTruncatedFixture.extensionData(
+            methods: singleTruncatedFixture.address64(at: singleTruncatedOffset)
+        ).readMethodLists(in: singleTruncatedFixture.machO)
+        XCTAssertEqual(singleTruncated.representation, .single)
+        XCTAssertTrue(singleTruncated.entries.isEmpty)
+        guard case .unreadableReferencedLayout =
+            singleTruncated.tableDiagnostics.first?.failure else {
+            return XCTFail("A truncated single header must be typed")
+        }
+
+        let relativeHeader = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size),
+                count: 0
+            )
+        )
+        let relativeExactFixture = try LoadedRWExtensionFixture()
+        let relativeExactOffset = relativeExactFixture.unreadableOffset
+            - MemoryLayout<EntrySizeListHeader>.size
+        relativeExactFixture.store(relativeHeader, at: relativeExactOffset)
+        try relativeExactFixture.protectUnreadablePage()
+        let relativeExact = relativeExactFixture.extensionData(
+            methods: relativeExactFixture.address64(at: relativeExactOffset) | 2
+        ).readMethodLists(in: relativeExactFixture.machO)
+        XCTAssertEqual(relativeExact.representation, .relative)
+        XCTAssertNotNil(relativeExact.relativeListList)
+        XCTAssertTrue(relativeExact.tableDiagnostics.isEmpty)
+
+        let relativeTruncatedFixture = try LoadedRWExtensionFixture()
+        let relativeTruncatedOffset = relativeTruncatedFixture.unreadableOffset
+            - MemoryLayout<UInt32>.size
+        relativeTruncatedFixture.store(relativeHeader, at: relativeTruncatedOffset)
+        try relativeTruncatedFixture.protectUnreadablePage()
+        let relativeTruncated = relativeTruncatedFixture.extensionData(
+            methods: relativeTruncatedFixture.address64(at: relativeTruncatedOffset) | 2
+        ).readMethodLists(in: relativeTruncatedFixture.machO)
+        XCTAssertEqual(relativeTruncated.representation, .relative)
+        XCTAssertNil(relativeTruncated.relativeListList)
+        guard case .unreadableImageRange =
+            relativeTruncated.tableDiagnostics.first?.failure else {
+            return XCTFail("A truncated relative header must be typed")
+        }
+    }
+
+    func test64BitArrayUsesPaddedTableOffsetAndReportsMisalignment() throws {
+        let exactFixture = try LoadedRWExtensionFixture()
+        let exactOffset = exactFixture.unreadableOffset - MemoryLayout<UInt64>.size
+        exactFixture.store(UInt32(0), at: exactOffset)
+        try exactFixture.protectUnreadablePage()
+        let exact = exactFixture.extensionData(
+            methods: exactFixture.address64(at: exactOffset) | 1
+        ).readMethodLists(in: exactFixture.machO)
+        XCTAssertEqual(exact.representation, .array)
+        XCTAssertTrue(exact.entries.isEmpty)
+        XCTAssertTrue(exact.tableDiagnostics.isEmpty)
+
+        let paddedFixture = try LoadedRWExtensionFixture()
+        let paddedOffset = paddedFixture.pageSize
+        let paddedListOffset = paddedFixture.pageSize * 2
+        paddedFixture.store(Self.emptyMemberHeader(), at: paddedListOffset)
+        paddedFixture.store(UInt32(1), at: paddedOffset)
+        paddedFixture.store(UInt32.max, at: paddedOffset + MemoryLayout<UInt32>.size)
+        paddedFixture.store(
+            paddedFixture.address64(at: paddedListOffset),
+            at: paddedOffset + MemoryLayout<UInt64>.size
+        )
+        let padded = paddedFixture.extensionData(
+            methods: paddedFixture.address64(at: paddedOffset) | 1
+        ).readMethodLists(in: paddedFixture.machO)
+        XCTAssertEqual(padded.representation, .array)
+        XCTAssertEqual(padded.entries.count, 1)
+        XCTAssertTrue(padded.tableDiagnostics.isEmpty)
+
+        let misalignedFixture = try LoadedRWExtensionFixture()
+        let misalignedOffset = misalignedFixture.pageSize + 4
+        misalignedFixture.store(UInt32(0), at: misalignedOffset)
+        let misalignedExtension = misalignedFixture.extensionData(
+            methods: misalignedFixture.address64(at: misalignedOffset) | 1
+        )
+        let misaligned = misalignedExtension.readMethodLists(in: misalignedFixture.machO)
+        let directMisaligned = try XCTUnwrap(
+            misalignedExtension.methodList(in: misalignedFixture.machO)
+        ).readLists(in: misalignedFixture.machO)
+        XCTAssertEqual(misaligned.representation, .array)
+        XCTAssertEqual(directMisaligned.representation, misaligned.representation)
+        XCTAssertEqual(directMisaligned.tableDiagnostics, misaligned.tableDiagnostics)
+        guard case let .misalignedTableAddress(_, requiredAlignment) =
+            misaligned.tableDiagnostics.first?.failure else {
+            return XCTFail("A 64-bit pointer array must be 8-byte aligned")
+        }
+        XCTAssertEqual(requiredAlignment, MemoryLayout<UInt64>.size)
+    }
+
+    func testNullArrayEntryAndInnerByteBudgetRemainTyped() throws {
+        let nullFixture = try LoadedRWExtensionFixture()
+        let arrayOffset = nullFixture.pageSize
+        nullFixture.storeArray64(pointers: [0], at: arrayOffset)
+        let nullEntry = nullFixture.extensionData(
+            methods: nullFixture.address64(at: arrayOffset) | 1
+        ).readMethodLists(in: nullFixture.machO)
+        XCTAssertEqual(nullEntry.representation, .array)
+        guard case .entry(index: 0, provenance: _) = nullEntry.tableDiagnostics.first?.site,
+              case .invalidPointer(rawValue: 0) = nullEntry.tableDiagnostics.first?.failure else {
+            return XCTFail("A null array entry must be an indexed failure")
+        }
+
+        let budgetFixture = try LoadedRWExtensionFixture()
+        let listOffset = budgetFixture.pageSize
+        let stride = MemoryLayout<ObjCMethod.Pointer>.size
+        let count = ObjCMetadataReadLimits.maximumTableByteCount / stride + 1
+        budgetFixture.store(
+            EntrySizeListHeader(
+                layout: .init(
+                    entsizeAndFlags: UInt32(stride),
+                    count: UInt32(count)
+                )
+            ),
+            at: listOffset
+        )
+        let budget = budgetFixture.extensionData(
+            methods: budgetFixture.address64(at: listOffset)
+        ).readMethodLists(in: budgetFixture.machO)
+        XCTAssertEqual(budget.representation, .single)
+        guard case let .excessiveByteCount(actual, maximum) =
+            budget.tableDiagnostics.first?.failure else {
+            return XCTFail("The referenced member table must share the byte budget")
+        }
+        XCTAssertEqual(actual, count * stride)
+        XCTAssertEqual(maximum, ObjCMetadataReadLimits.maximumTableByteCount)
+    }
+
+    func testCentralReaderRoutes32BitSingleAndRelativeTags() throws {
+        let fixture = try LoadedRWExtensionFixture()
+        let single: ObjCLoadedListArrayReadResult<Int, Never> =
+            ObjCLoadedListArrayReader.read(
+                ObjCLoadedListArrayReader.storage(
+                    from: UInt32(0x1000),
+                    in: fixture.machO
+                ),
+                in: fixture.machO,
+                pointerType: UInt32.self,
+                owner: .loadedRWExtension(kind: .method, pointerWidth: .bits32),
+                readList: { .value(Int($0)) },
+                readRelative: {
+                    XCTFail("Unexpected relative route at \($0.address)")
+                    return .init(representation: nil)
+                }
+            )
+        XCTAssertEqual(single.representation, .single)
+        XCTAssertEqual(single.entries.map(\.list), [0x1000])
+
+        let relative: ObjCLoadedListArrayReadResult<Int, String> =
+            ObjCLoadedListArrayReader.read(
+                ObjCLoadedListArrayReader.storage(
+                    from: UInt32(0x2002),
+                    in: fixture.machO
+                ),
+                in: fixture.machO,
+                pointerType: UInt32.self,
+                owner: .loadedRWExtension(kind: .method, pointerWidth: .bits32),
+                readList: { _ in
+                    XCTFail("Unexpected regular-list route")
+                    return .absent
+                },
+                readRelative: { storage in
+                    XCTAssertEqual(storage.address, 0x2000)
+                    return .init(
+                        representation: .relative,
+                        relativeListList: "relative32"
+                    )
+                }
+            )
+        XCTAssertEqual(relative.representation, .relative)
+        XCTAssertEqual(relative.relativeListList, "relative32")
+    }
+
+    func testTaggedRelativeStoragePreservesGoodBadGoodAndEntryProvenance() throws {
+        let fixture = try LoadedRWExtensionFixture()
+        let outerOffset = fixture.pageSize
+        let firstListOffset = fixture.pageSize * 2
+        let badListOffset = fixture.unreadableOffset
+        let lastListOffset = fixture.pageSize * 4
+        let stride = MemoryLayout<RelativeListListEntry.Layout>.size
+        fixture.store(
+            EntrySizeListHeader(
+                layout: .init(entsizeAndFlags: UInt32(stride), count: 3)
+            ),
+            at: outerOffset
+        )
+        fixture.store(Self.emptyMemberHeader(), at: firstListOffset)
+        fixture.store(Self.emptyMemberHeader(), at: lastListOffset)
+        for (index, targetOffset) in [
+            firstListOffset,
+            badListOffset,
+            lastListOffset,
+        ].enumerated() {
+            let entryOffset = outerOffset
+                + MemoryLayout<EntrySizeListHeader>.size
+                + index * stride
+            fixture.store(
+                Self.relativeEntry(
+                    entryOffset: entryOffset,
+                    targetOffset: targetOffset,
+                    imageIndex: index
+                ).layout,
+                at: entryOffset
+            )
+        }
+        try fixture.protectUnreadablePage()
+        let owner = ObjCMetadataTableDiagnostic.Owner.loadedRWExtension(
+            kind: .method,
+            pointerWidth: .bits64
+        )
+        let result: ObjCLoadedListArrayReadResult<
+            ObjCMethodList,
+            ObjCMethodRelativeListList
+        > = ObjCLoadedListArrayReader.read(
+            ObjCLoadedListArrayReader.storage(
+                from: fixture.address64(at: outerOffset) | 2,
+                in: fixture.machO
+            ),
+            in: fixture.machO,
+            pointerType: UInt64.self,
+            owner: owner,
+            readList: { _ in
+                XCTFail("Unexpected regular-list route")
+                return .absent
+            },
+            readRelative: { storage in
+                let header: EntrySizeListHeader
+                switch ObjCMetadataTableReader.readImageLayout(
+                    address: storage.address,
+                    as: EntrySizeListHeader.self
+                ) {
+                case .success(let value):
+                    header = value
+                case .failure(let failure):
+                    return ObjCLoadedListArrayReader.tableFailure(
+                        representation: .relative,
+                        owner: owner,
+                        provenance: storage.provenance,
+                        failure: .init(failure)
+                    )
+                }
+                let relative = ObjCMethodRelativeListList(
+                    offset: storage.offset,
+                    header: header
+                )
+                return ObjCLoadedListArrayReader.relativeResult(
+                    relative,
+                    resolution: relative.resolveMemberLists(
+                        in: fixture.machO,
+                        imageLoadResolver: { _ in .loaded },
+                        imageResolver: { _ in fixture.machO }
+                    ),
+                    in: fixture.machO,
+                    owner: owner
+                )
+            }
+        )
+
+        XCTAssertEqual(result.representation, .relative)
+        XCTAssertEqual(result.entries.map(\.list.offset), [firstListOffset, lastListOffset])
+        guard result.tableDiagnostics.count == 1,
+              case let .entry(index, provenance) = result.tableDiagnostics[0].site,
+              case .unreadableReferencedLayout = result.tableDiagnostics[0].failure else {
+            return XCTFail("Only the unreadable middle relative list must fail")
+        }
+        XCTAssertEqual(index, 1)
+        XCTAssertEqual(
+            provenance.logicalOffset,
+            outerOffset + MemoryLayout<EntrySizeListHeader>.size + stride
+        )
+    }
+
+    func testRelativeProtocolDirectOwnerIsSafeFor32And64BitLists() throws {
+        let fixture = try LoadedRWExtensionFixture()
+        let outerOffset = fixture.pageSize
+        let list64Offset = fixture.pageSize * 2
+        let list32Offset = list64Offset + 0x100
+        fixture.store(ObjCProtocolListHeader64(_count: 0), at: list64Offset)
+        fixture.store(ObjCProtocolListHeader32(_count: 0), at: list32Offset)
+        let header = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<RelativeListListEntry.Layout>.size),
+                count: 1
+            )
+        )
+        let relative64 = ObjCProtocolRelativeListList64(
+            offset: outerOffset,
+            header: header
+        )
+        let relative32 = ObjCProtocolRelativeListList32(
+            offset: outerOffset,
+            header: header
+        )
+        let entry64 = Self.relativeEntry(
+            entryOffset: outerOffset + MemoryLayout<EntrySizeListHeader>.size,
+            targetOffset: list64Offset,
+            imageIndex: 7
+        )
+        let entry32 = Self.relativeEntry(
+            entryOffset: outerOffset + MemoryLayout<EntrySizeListHeader>.size,
+            targetOffset: list32Offset,
+            imageIndex: 7
+        )
+
+        guard case .resolved(_, let list64) = relative64.resolveLoadedList(
+            in: fixture.machO,
+            for: entry64,
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in fixture.machO }
+        ) else {
+            return XCTFail("The 64-bit direct query must use the checked owner")
+        }
+        guard case .resolved(_, let list32) = relative32.resolveLoadedList(
+            in: fixture.machO,
+            for: entry32,
+            imageLoadResolver: { _ in .loaded },
+            imageResolver: { _ in fixture.machO }
+        ) else {
+            return XCTFail("The 32-bit direct query must use the checked owner")
+        }
+        XCTAssertEqual(list64.header._count, 0)
+        XCTAssertEqual(list32.header._count, 0)
+
+        var imageResolutionCount = 0
+        guard case .omitted = relative64.resolveLoadedList(
+            in: fixture.machO,
+            for: entry64,
+            imageLoadResolver: { _ in .unloaded },
+            imageResolver: { _ in
+                imageResolutionCount += 1
+                return fixture.machO
+            }
+        ) else {
+            return XCTFail("An unloaded direct entry must be omitted")
+        }
+        XCTAssertEqual(imageResolutionCount, 0)
+
+        let unavailableEntry = Self.relativeEntry(
+            entryOffset: outerOffset + MemoryLayout<EntrySizeListHeader>.size,
+            targetOffset: fixture.unreadableOffset,
+            imageIndex: Int(UInt16.max)
+        )
+        fixture.store(
+            unavailableEntry.layout,
+            at: outerOffset + MemoryLayout<EntrySizeListHeader>.size
+        )
+        XCTAssertNil(relative64.list(in: fixture.machO, for: unavailableEntry))
+        XCTAssertNil(relative32.list(in: fixture.machO, for: unavailableEntry))
+        XCTAssertNil(
+            relative64.list(
+                in: fixture.machO,
+                forImageIndex: Int(UInt16.max)
+            )
+        )
+        XCTAssertNil(
+            relative32.list(
+                in: fixture.machO,
+                forImageIndex: Int(UInt16.max)
+            )
+        )
+        XCTAssertNil(relative64.list(in: fixture.machO, forImageIndex: nil))
+        XCTAssertNil(relative32.list(in: fixture.machO, forImageIndex: nil))
+    }
+
     private static func emptyMemberHeader() -> EntrySizeListHeader {
         .init(layout: .init(entsizeAndFlags: .max, count: 0))
+    }
+
+    private static func relativeEntry(
+        entryOffset: Int,
+        targetOffset: Int,
+        imageIndex: Int
+    ) -> RelativeListListEntry {
+        var layout = RelativeListListEntry.Layout()
+        layout.imageIndex = UInt64(imageIndex)
+        layout.listOffset = Int64(targetOffset - entryOffset)
+        return RelativeListListEntry(offset: entryOffset, layout: layout)
     }
 }
 
