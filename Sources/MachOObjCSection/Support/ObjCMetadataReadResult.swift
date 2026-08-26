@@ -24,16 +24,21 @@ public struct ObjCMetadataReadResult<Value> {
     /// Recoverable fixed-field failures in deterministic discovery order.
     public let fieldDiagnostics: [ObjCMetadataFieldDiagnostic]
 
+    /// Recoverable bounded-table and loaded-relationship failures in discovery order.
+    public let tableDiagnostics: [ObjCMetadataTableDiagnostic]
+
     internal init(
         value: Value?,
         diagnostics: [ObjCProtocolDiagnostic],
         memberListDiagnostics: [ObjCMemberListDiagnostic] = [],
-        fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
+        fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = [],
+        tableDiagnostics: [ObjCMetadataTableDiagnostic] = []
     ) {
         self.value = value
         self.diagnostics = diagnostics
         self.memberListDiagnostics = memberListDiagnostics
         self.fieldDiagnostics = fieldDiagnostics
+        self.tableDiagnostics = tableDiagnostics
     }
 }
 

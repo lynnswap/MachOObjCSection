@@ -145,7 +145,7 @@ extension ObjCProtocolProtocol {
     internal func readLoadedMethodList(
         field: LayoutField,
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+    ) -> ObjCMetadataReferenceRead<ObjCMethodList> {
         let pointer = layout[keyPath: keyPath(of: field)]
         guard pointer == 0 || pointer & 1 == 0 else {
             return .failure(
@@ -178,7 +178,7 @@ extension ObjCProtocolProtocol {
     internal func readLoadedPropertyList(
         field: LayoutField,
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+    ) -> ObjCMetadataReferenceRead<ObjCPropertyList> {
         if case ._classProperties = field {
             let fieldOffset = machO.is64Bit ? 88 : 48
             guard size >= fieldOffset + MemoryLayout<Layout.Pointer>.size else {

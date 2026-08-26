@@ -1664,6 +1664,257 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         }
     }
 
+    func testRegularMemberTableDiagnosticsCoverAllSixReadInfoPaths() throws {
+        let fileProtocolFixture = try SyntheticFileFixture(
+            nodes: [.init(name: "A")],
+            memberTable: .invalidStride
+        )
+        let fileProtocol = protocolWithAllMemberPointers(
+            fileProtocolFixture.protocols[0]
+        )
+        let fileProtocolResult = fileProtocol.readInfo(in: fileProtocolFixture.machO)
+        XCTAssertEqual(
+            memberKinds(in: fileProtocolResult.tableDiagnostics),
+            [
+                .classProperty,
+                .instanceProperty,
+                .classMethod,
+                .instanceMethod,
+                .optionalClassMethod,
+                .optionalInstanceMethod,
+            ]
+        )
+        XCTAssertTrue(fileProtocolResult.diagnostics.isEmpty)
+        XCTAssertTrue(fileProtocolResult.memberListDiagnostics.isEmpty)
+        XCTAssertTrue(fileProtocolResult.fieldDiagnostics.isEmpty)
+
+        let imageProtocolFixture = SyntheticImageFixture(
+            nodes: [.init(name: "A")],
+            memberTable: .invalidStride
+        )
+        let imageProtocol = protocolWithAllMemberPointers(
+            imageProtocolFixture.protocols[0]
+        )
+        let imageProtocolResult = imageProtocol.readInfo(in: imageProtocolFixture.machO)
+        XCTAssertEqual(
+            memberKinds(in: imageProtocolResult.tableDiagnostics),
+            [
+                .classProperty,
+                .instanceProperty,
+                .classMethod,
+                .instanceMethod,
+                .optionalClassMethod,
+                .optionalInstanceMethod,
+            ]
+        )
+
+        let fileOwners = try SyntheticFileFixture(
+            nodes: [],
+            memberTable: .invalidStride
+        )
+        assertSingleMemberTableFailure(
+            fileOwners.objcClass.readInfo(in: fileOwners.machO).tableDiagnostics,
+            owner: .member(
+                subject: .class(name: "FixtureClass"),
+                kind: .instanceMethod
+            )
+        )
+        assertSingleMemberTableFailure(
+            fileOwners.category.readInfo(in: fileOwners.machO).tableDiagnostics,
+            owner: .member(
+                subject: .category(
+                    className: "FixtureClass",
+                    name: "FixtureCategory"
+                ),
+                kind: .instanceMethod
+            )
+        )
+
+        let imageOwners = SyntheticImageFixture(
+            nodes: [],
+            memberTable: .invalidStride
+        )
+        assertSingleMemberTableFailure(
+            imageOwners.objcClass.readInfo(in: imageOwners.machO).tableDiagnostics,
+            owner: .member(
+                subject: .class(name: "FixtureClass"),
+                kind: .instanceMethod
+            )
+        )
+        assertSingleMemberTableFailure(
+            imageOwners.category.readInfo(in: imageOwners.machO).tableDiagnostics,
+            owner: .member(
+                subject: .category(
+                    className: "FixtureClass",
+                    name: "FixtureCategory"
+                ),
+                kind: .instanceMethod
+            )
+        )
+    }
+
+    func testMemberEntryFailureKeepsReadableSiblingsAndLegacyProjection() throws {
+        let fixture = try SyntheticFileFixture(
+            nodes: [.init(name: "A")],
+            memberTable: .pointerMethodsWithInvalidMiddle
+        )
+
+        let result = fixture.protocols[0].readInfo(in: fixture.machO)
+
+        XCTAssertEqual(result.value?.methods.map(\.name), ["method0", "method2"])
+        XCTAssertEqual(
+            fixture.protocols[0].info(in: fixture.machO)?.methods.map(\.name),
+            ["method0", "method2"]
+        )
+        guard result.tableDiagnostics.count == 1,
+              case .entry(index: 1, provenance: let provenance) =
+                result.tableDiagnostics[0].site else {
+            return XCTFail("Expected one ordered entry failure")
+        }
+        XCTAssertEqual(
+            result.tableDiagnostics[0].owner,
+            .member(subject: .protocol(name: "A"), kind: .instanceMethod)
+        )
+        XCTAssertEqual(
+            result.tableDiagnostics[0].failure,
+            .invalidMethodImplementationOffset
+        )
+        XCTAssertEqual(
+            provenance.logicalOffset,
+            SyntheticGraph.memberListOffset
+                + MemoryLayout<EntrySizeListHeader>.size
+                + MemoryLayout<ObjCMethod.Pointer64>.size
+        )
+    }
+
+    func testIvarTableFailuresUseTheIvarOwnerForFileAndImage() throws {
+        let file = try SyntheticFileFixture(nodes: [], invalidIvarTable: true)
+        assertSingleIvarTableFailure(
+            file.objcClass.readInfo(in: file.machO).tableDiagnostics
+        )
+
+        let image = SyntheticImageFixture(nodes: [], invalidIvarTable: true)
+        assertSingleIvarTableFailure(
+            image.objcClass.readInfo(in: image.machO).tableDiagnostics
+        )
+    }
+
+    func testMemberHeaderFailuresPropagateWithoutChangingLegacyValues() throws {
+        let file = try SyntheticFileFixture(nodes: [.init(name: "A")])
+        let fileProtocol = protocolReplacingInstanceMethods(
+            file.protocols[0],
+            with: SyntheticGraph.fileVMAddress + UInt64(SyntheticGraph.fileSize - 4)
+        )
+        let fileResult = fileProtocol.readInfo(in: file.machO)
+        XCTAssertEqual(fileResult.value?.methods, [])
+        XCTAssertEqual(fileProtocol.info(in: file.machO)?.methods, [])
+        XCTAssertEqual(
+            fileResult.tableDiagnostics.first?.owner,
+            .member(subject: .protocol(name: "A"), kind: .instanceMethod)
+        )
+        guard case .some(.unreadableFileHeader) =
+            fileResult.tableDiagnostics.first?.failure else {
+            return XCTFail("Expected an unreadable file member header")
+        }
+
+        let image = SyntheticImageFixture(nodes: [.init(name: "A")])
+        let imageProtocol = protocolReplacingInstanceMethods(
+            image.protocols[0],
+            with: .max - 1
+        )
+        let imageResult = imageProtocol.readInfo(in: image.machO)
+        XCTAssertEqual(imageResult.value?.methods, [])
+        XCTAssertEqual(imageProtocol.info(in: image.machO)?.methods, [])
+        XCTAssertEqual(
+            imageResult.tableDiagnostics.first?.owner,
+            .member(subject: .protocol(name: "A"), kind: .instanceMethod)
+        )
+        guard case .some(.unreadableReferencedLayout) =
+            imageResult.tableDiagnostics.first?.failure else {
+            return XCTFail(
+                "Expected an unreadable loaded member header, got \(String(describing: imageResult.tableDiagnostics.first?.failure))"
+            )
+        }
+    }
+
+    func testLoadedRelationshipFailuresKeepValueSemanticsAndDiscoveryOrder() {
+        let superclass = SyntheticImageFixture(
+            nodes: [],
+            memberTable: .invalidStride,
+            classSuperclassPointerOverride: .max
+        )
+        let superclassResult = superclass.objcClass.readInfo(in: superclass.machO)
+        XCTAssertEqual(superclassResult.value?.name, "FixtureClass")
+        XCTAssertEqual(superclassResult.value?.superClassName, nil)
+        XCTAssertEqual(superclassResult.tableDiagnostics.count, 2)
+        XCTAssertEqual(
+            superclassResult.tableDiagnostics[0].owner,
+            .member(
+                subject: .class(name: "FixtureClass"),
+                kind: .instanceMethod
+            )
+        )
+        XCTAssertEqual(
+            superclassResult.tableDiagnostics[1].owner,
+            .loadedRelationship(
+                subject: .class(name: "FixtureClass"),
+                role: .superclass
+            )
+        )
+        guard case .relationship = superclassResult.tableDiagnostics[1].site else {
+            return XCTFail("Expected superclass relationship provenance")
+        }
+
+        let metaclass = SyntheticImageFixture(
+            nodes: [],
+            classMetaPointerOverride: .max
+        )
+        let metaclassResult = metaclass.objcClass.readInfo(in: metaclass.machO)
+        XCTAssertNil(metaclassResult.value)
+        XCTAssertEqual(
+            metaclassResult.tableDiagnostics.first?.owner,
+            .loadedRelationship(
+                subject: .class(name: "FixtureClass"),
+                role: .metaclass
+            )
+        )
+
+        let categoryFixture = SyntheticImageFixture(
+            nodes: [],
+            categoryClassPointerOverride: .max
+        )
+        let categoryResult = categoryFixture.category.readInfo(in: categoryFixture.machO)
+        XCTAssertNil(categoryResult.value)
+        XCTAssertEqual(
+            categoryResult.tableDiagnostics.first?.owner,
+            .loadedRelationship(
+                subject: .category(
+                    className: "<unknown>",
+                    name: "FixtureCategory"
+                ),
+                role: .categoryClass
+            )
+        )
+
+        let stubCategory = ObjCCategory64(
+            layout: categoryFixture.category.layout,
+            offset: categoryFixture.category.offset,
+            isCatlist2: true
+        )
+        let stubResult = stubCategory.readInfo(in: categoryFixture.machO)
+        XCTAssertNil(stubResult.value)
+        XCTAssertEqual(
+            stubResult.tableDiagnostics.first?.owner,
+            .loadedRelationship(
+                subject: .category(
+                    className: "<unknown>",
+                    name: "FixtureCategory"
+                ),
+                role: .categoryStubClass
+            )
+        )
+    }
+
     func testEmptyRelativeListDoesNotRequireOwnerImageIndex() throws {
         let relativePointer = (SyntheticGraph.fileVMAddress + 0xA00) | 1
         let fixture = try SyntheticFileFixture(
@@ -1899,6 +2150,121 @@ final class ObjCProtocolSafetyTests: XCTestCase {
         )
     }
 
+    private func protocolWithAllMemberPointers(
+        _ value: ObjCProtocol64
+    ) -> ObjCProtocol64 {
+        let layout = value.layout
+        let pointer = layout.instanceMethods
+        return .init(
+            layout: .init(
+                isa: layout.isa,
+                mangledName: layout.mangledName,
+                protocols: layout.protocols,
+                instanceMethods: pointer,
+                classMethods: pointer,
+                optionalInstanceMethods: pointer,
+                optionalClassMethods: pointer,
+                instanceProperties: pointer,
+                size: layout.size,
+                flags: layout.flags,
+                _extendedMethodTypes: layout._extendedMethodTypes,
+                _demangledName: layout._demangledName,
+                _classProperties: pointer
+            ),
+            offset: value.offset
+        )
+    }
+
+    private func protocolReplacingInstanceMethods(
+        _ value: ObjCProtocol64,
+        with pointer: UInt64
+    ) -> ObjCProtocol64 {
+        let layout = value.layout
+        return .init(
+            layout: .init(
+                isa: layout.isa,
+                mangledName: layout.mangledName,
+                protocols: layout.protocols,
+                instanceMethods: pointer,
+                classMethods: layout.classMethods,
+                optionalInstanceMethods: layout.optionalInstanceMethods,
+                optionalClassMethods: layout.optionalClassMethods,
+                instanceProperties: layout.instanceProperties,
+                size: layout.size,
+                flags: layout.flags,
+                _extendedMethodTypes: layout._extendedMethodTypes,
+                _demangledName: layout._demangledName,
+                _classProperties: layout._classProperties
+            ),
+            offset: value.offset
+        )
+    }
+
+    private func memberKinds(
+        in diagnostics: [ObjCMetadataTableDiagnostic]
+    ) -> [ObjCMetadataTableDiagnostic.MemberKind] {
+        diagnostics.compactMap { diagnostic in
+            guard case let .member(subject, kind) = diagnostic.owner else {
+                XCTFail("Expected a member table owner")
+                return nil
+            }
+            XCTAssertEqual(subject, .protocol(name: "A"))
+            guard case .table = diagnostic.site else {
+                XCTFail("Expected a whole-table failure")
+                return nil
+            }
+            return kind
+        }
+    }
+
+    private func assertSingleMemberTableFailure(
+        _ diagnostics: [ObjCMetadataTableDiagnostic],
+        owner: ObjCMetadataTableDiagnostic.Owner,
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(diagnostics.count, 1, file: file, line: line)
+        XCTAssertEqual(diagnostics.first?.owner, owner, file: file, line: line)
+        guard case .some(.table) = diagnostics.first?.site else {
+            return XCTFail("Expected a whole-table site", file: file, line: line)
+        }
+        XCTAssertEqual(
+            diagnostics.first?.failure,
+            .unexpectedElementStride(
+                advertised: Int(
+                    UInt32(MemoryLayout<ObjCMethod.Pointer64>.size - 1)
+                        & ~ObjCMethodList.flagMask
+                ),
+                expected: MemoryLayout<ObjCMethod.Pointer64>.size
+            ),
+            file: file,
+            line: line
+        )
+    }
+
+    private func assertSingleIvarTableFailure(
+        _ diagnostics: [ObjCMetadataTableDiagnostic],
+        file: StaticString = #filePath,
+        line: UInt = #line
+    ) {
+        XCTAssertEqual(diagnostics.count, 1, file: file, line: line)
+        XCTAssertEqual(
+            diagnostics.first?.owner,
+            .member(subject: .class(name: "FixtureClass"), kind: .ivar),
+            file: file,
+            line: line
+        )
+        XCTAssertEqual(
+            diagnostics.first?.failure,
+            .unexpectedElementStride(
+                advertised: MemoryLayout<ObjCIvar64.Layout>.size - 1,
+                expected: MemoryLayout<ObjCIvar64.Layout>.size
+            ),
+            file: file,
+            line: line
+        )
+    }
+
     private func assertTableFailure<Source, Protocol>(
         _ outcome: ObjCProtocolListReadOutcome<Source, Protocol>,
         matches: (ObjCMetadataTableFailure) -> Bool,
@@ -1943,6 +2309,10 @@ private enum SyntheticGraph {
     static let categoryProtocolListOffset = 0x780
     static let classNameOffset = 0x800
     static let categoryNameOffset = 0x840
+    static let memberListOffset = 0x900
+    static let memberNameBaseOffset = 0xA00
+    static let memberTypeBaseOffset = 0xB00
+    static let ivarListOffset = 0xD00
     static let protocolBaseOffset = 0x1000
     static let protocolStride = 0x100
     static let listBaseOffset = 0x8000
@@ -1955,6 +2325,11 @@ private enum SyntheticGraph {
         case invalid
         case offset(Int)
         case pointer(UInt64)
+    }
+
+    enum MemberTable {
+        case invalidStride
+        case pointerMethodsWithInvalidMiddle
     }
 
     struct Node {
@@ -1998,7 +2373,12 @@ private enum SyntheticGraph {
         segmentVMAddress: UInt64,
         classProtocolPointerOverride: UInt64? = nil,
         categoryProtocolPointerOverride: UInt64? = nil,
-        classRelativeProtocolListHeader: EntrySizeListHeader? = nil
+        classRelativeProtocolListHeader: EntrySizeListHeader? = nil,
+        memberTable: MemberTable? = nil,
+        invalidIvarTable: Bool = false,
+        classMetaPointerOverride: UInt64? = nil,
+        classSuperclassPointerOverride: UInt64? = nil,
+        categoryClassPointerOverride: UInt64? = nil
     ) -> Built {
         precondition(nodes.count <= 70)
         var data = Data(count: fileSize)
@@ -2029,6 +2409,67 @@ private enum SyntheticGraph {
 
         data.storeCString("FixtureClass", at: classNameOffset)
         data.storeCString("FixtureCategory", at: categoryNameOffset)
+
+        let memberListPointer: UInt64
+        switch memberTable {
+        case nil:
+            memberListPointer = 0
+        case .invalidStride:
+            memberListPointer = address(memberListOffset)
+            data.store(
+                EntrySizeListHeader(
+                    layout: .init(
+                        entsizeAndFlags: UInt32(MemoryLayout<ObjCMethod.Pointer64>.size - 1),
+                        count: 1
+                    )
+                ),
+                at: memberListOffset
+            )
+        case .pointerMethodsWithInvalidMiddle:
+            memberListPointer = address(memberListOffset)
+            let entrySize = MemoryLayout<ObjCMethod.Pointer64>.size
+            data.store(
+                EntrySizeListHeader(
+                    layout: .init(
+                        entsizeAndFlags: UInt32(entrySize),
+                        count: 3
+                    )
+                ),
+                at: memberListOffset
+            )
+            for index in 0..<3 {
+                let nameOffset = memberNameBaseOffset + index * 0x40
+                let typeOffset = memberTypeBaseOffset + index * 0x40
+                data.storeCString("method\(index)", at: nameOffset)
+                data.storeCString("v@:", at: typeOffset)
+                data.store(
+                    ObjCMethod.Pointer64(
+                        name: address(nameOffset),
+                        types: address(typeOffset),
+                        imp: index == 1 ? 1 : address(0xC00 + index * 8)
+                    ),
+                    at: memberListOffset
+                        + MemoryLayout<EntrySizeListHeader>.size
+                        + index * entrySize
+                )
+            }
+        }
+
+        let ivarListPointer: UInt64
+        if invalidIvarTable {
+            ivarListPointer = address(ivarListOffset)
+            data.store(
+                EntrySizeListHeader(
+                    layout: .init(
+                        entsizeAndFlags: UInt32(MemoryLayout<ObjCIvar64.Layout>.size - 1),
+                        count: 1
+                    )
+                ),
+                at: ivarListOffset
+            )
+        } else {
+            ivarListPointer = 0
+        }
 
         var protocolLayouts: [ObjCProtocol64.Layout] = []
         let protocolOffsets = nodes.enumerated().map { index, node in
@@ -2064,7 +2505,7 @@ private enum SyntheticGraph {
                 isa: 0,
                 mangledName: address(nameOffset),
                 protocols: node.children.isEmpty && node.declaredCount == nil ? 0 : address(listOffset),
-                instanceMethods: 0,
+                instanceMethods: memberListPointer,
                 classMethods: 0,
                 optionalInstanceMethods: 0,
                 optionalClassMethods: 0,
@@ -2103,10 +2544,10 @@ private enum SyntheticGraph {
             _reserved: 0,
             ivarLayout: 0,
             name: address(classNameOffset),
-            baseMethods: 0,
+            baseMethods: memberListPointer,
             baseProtocols: classProtocolPointerOverride
                 ?? (nodes.isEmpty ? 0 : address(classProtocolListOffset)),
-            ivars: 0,
+            ivars: ivarListPointer,
             weakIvarLayout: 0,
             baseProperties: 0
         )
@@ -2136,8 +2577,8 @@ private enum SyntheticGraph {
         }
 
         let classLayout = ObjCClass64.Layout(
-            isa: address(metaClassOffset),
-            superclass: 0,
+            isa: classMetaPointerOverride ?? address(metaClassOffset),
+            superclass: classSuperclassPointerOverride ?? 0,
             methodCacheBuckets: 0,
             methodCacheProperties: 0,
             dataVMAddrAndFastFlags: address(classROOffset),
@@ -2156,8 +2597,8 @@ private enum SyntheticGraph {
 
         let categoryLayout = ObjCCategory64.Layout(
             name: address(categoryNameOffset),
-            cls: address(classOffset),
-            instanceMethods: 0,
+            cls: categoryClassPointerOverride ?? address(classOffset),
+            instanceMethods: memberListPointer,
             classMethods: 0,
             protocols: categoryProtocolPointerOverride
                 ?? (nodes.isEmpty ? 0 : address(categoryProtocolListOffset)),
@@ -2335,7 +2776,9 @@ private final class SyntheticFileFixture {
         nodes: [SyntheticGraph.Node],
         classProtocolPointerOverride: UInt64? = nil,
         categoryProtocolPointerOverride: UInt64? = nil,
-        classRelativeProtocolListHeader: EntrySizeListHeader? = nil
+        classRelativeProtocolListHeader: EntrySizeListHeader? = nil,
+        memberTable: SyntheticGraph.MemberTable? = nil,
+        invalidIvarTable: Bool = false
     ) throws {
         let built = SyntheticGraph.build(
             nodes: nodes,
@@ -2343,7 +2786,9 @@ private final class SyntheticFileFixture {
             segmentVMAddress: SyntheticGraph.fileVMAddress,
             classProtocolPointerOverride: classProtocolPointerOverride,
             categoryProtocolPointerOverride: categoryProtocolPointerOverride,
-            classRelativeProtocolListHeader: classRelativeProtocolListHeader
+            classRelativeProtocolListHeader: classRelativeProtocolListHeader,
+            memberTable: memberTable,
+            invalidIvarTable: invalidIvarTable
         )
         self.data = built.data
         self.url = FileManager.default.temporaryDirectory
@@ -2376,13 +2821,25 @@ private final class SyntheticImageFixture {
     let category: ObjCCategory64
     private let storage: UnsafeMutableRawPointer
 
-    init(nodes: [SyntheticGraph.Node]) {
+    init(
+        nodes: [SyntheticGraph.Node],
+        memberTable: SyntheticGraph.MemberTable? = nil,
+        invalidIvarTable: Bool = false,
+        classMetaPointerOverride: UInt64? = nil,
+        classSuperclassPointerOverride: UInt64? = nil,
+        categoryClassPointerOverride: UInt64? = nil
+    ) {
         self.storage = .allocate(byteCount: SyntheticGraph.fileSize, alignment: 16)
         let baseAddress = UInt64(UInt(bitPattern: storage))
         let built = SyntheticGraph.build(
             nodes: nodes,
             pointerBase: baseAddress,
-            segmentVMAddress: baseAddress
+            segmentVMAddress: baseAddress,
+            memberTable: memberTable,
+            invalidIvarTable: invalidIvarTable,
+            classMetaPointerOverride: classMetaPointerOverride,
+            classSuperclassPointerOverride: classSuperclassPointerOverride,
+            categoryClassPointerOverride: categoryClassPointerOverride
         )
         built.data.copyBytes(
             to: storage.assumingMemoryBound(to: UInt8.self),

@@ -42,6 +42,25 @@ private func consumeFieldDiagnostics<Class: ObjCClassProtocol>(
         + objcClass.readInfo(in: image).fieldDiagnostics
 }
 
+private func consumeTableDiagnostics<
+    Class: ObjCClassProtocol,
+    Protocol: ObjCProtocolProtocol,
+    Category: ObjCCategoryProtocol
+>(
+    objcClass: Class,
+    objcProtocol: Protocol,
+    category: Category,
+    file: MachOFile,
+    image: MachOImage
+) -> [ObjCMetadataTableDiagnostic] {
+    objcClass.readInfo(in: file).tableDiagnostics
+        + objcClass.readInfo(in: image).tableDiagnostics
+        + objcProtocol.readInfo(in: file).tableDiagnostics
+        + objcProtocol.readInfo(in: image).tableDiagnostics
+        + category.readInfo(in: file).tableDiagnostics
+        + category.readInfo(in: image).tableDiagnostics
+}
+
 private func inspectFieldDiagnostic(
     _ diagnostic: ObjCMetadataFieldDiagnostic
 ) -> Int {
@@ -144,7 +163,12 @@ private func inspectTableDiagnostic(
 
     switch diagnostic.failure {
     case .unsupportedListEncoding,
-         .missingImageBaseSegment:
+         .missingImageBaseSegment,
+         .unresolvedListPointer,
+         .missingListBackingData,
+         .invalidEntryLogicalOffset,
+         .invalidMethodImplementationOffset,
+         .invalidRelativeDisplacement:
         break
     case .invalidListOffset(let offset),
          .invalidSignedElementCount(let offset):
@@ -177,6 +201,9 @@ private func inspectTableDiagnostic(
     case let .unreadableFileRange(offset, byteCount):
         _ = offset
         _ = byteCount
+    case let .unreadableFileHeader(offset, byteCount):
+        _ = offset
+        _ = byteCount
     case let .unreadableImageRange(address, byteCount),
          let .unreadableReferencedLayout(address, byteCount):
         _ = address
@@ -184,6 +211,8 @@ private func inspectTableDiagnostic(
     case let .invalidSectionByteCount(byteCount, pointerSize):
         _ = byteCount
         _ = pointerSize
+    case .invalidFileListOffset(let offset):
+        _ = offset
     case let .invalidSectionCoordinates(
         sectionAddress,
         sectionSize,

@@ -120,6 +120,84 @@ extension ObjCProtocolInfoOptions {
     }
 }
 
+private extension ObjCProtocolTraversalContext {
+    mutating func methodInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCMethodList>,
+        in source: MachOFile,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassMethod: Bool
+    ) -> [ObjCMethodInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readMethods(in: source) },
+            transform: { $0.info(isClassMethod: isClassMethod) }
+        )
+    }
+
+    mutating func methodInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCMethodList>,
+        in source: MachOImage,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassMethod: Bool
+    ) -> [ObjCMethodInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readMethods(in: source) },
+            transform: { $0.info(isClassMethod: isClassMethod) }
+        )
+    }
+
+    mutating func propertyInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCPropertyList>,
+        in source: MachOFile,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassProperty: Bool
+    ) -> [ObjCPropertyInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readProperties(in: source) },
+            transform: { $0.info(isClassProperty: isClassProperty) }
+        )
+    }
+
+    mutating func propertyInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCPropertyList>,
+        in source: MachOImage,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassProperty: Bool
+    ) -> [ObjCPropertyInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readProperties(in: source) },
+            transform: { $0.info(isClassProperty: isClassProperty) }
+        )
+    }
+}
+
 // MARK: - IVar
 extension ObjCIvarProtocol {
     public func info(in machO: MachOFile) -> ObjCIvarInfo? {
@@ -213,7 +291,11 @@ extension ObjCProtocolProtocol {
             options: effectiveOptions,
             context: &context
         )
-        return .init(value: value, diagnostics: context.diagnostics)
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
     }
 
     private func _readInfo(
@@ -223,6 +305,9 @@ extension ObjCProtocolProtocol {
         context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
         let name = knownName ?? mangledName(in: machO)
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.protocol(
+            name: name
+        )
 
         let protocols = referencedProtocolInfos(
             in: machO,
@@ -230,35 +315,53 @@ extension ObjCProtocolProtocol {
             context: &context
         )
 
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readFilePropertyList(field: ._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readFilePropertyList(field: .instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readFileMethodList(field: .classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readFileMethodList(field: .instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
-        let optionalClassMethodsList = optionalClassMethodList(in: machO)
-        let optionalClassMethods = optionalClassMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let optionalClassMethods = context.methodInfos(
+            from: readFileMethodList(field: .optionalClassMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalClassMethod,
+            isClassMethod: true
+        )
 
-        let optionalMethodsList = optionalInstanceMethodList(in: machO)
-        let optionalMethods = optionalMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let optionalMethods = context.methodInfos(
+            from: readFileMethodList(field: .optionalInstanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalInstanceMethod,
+            isClassMethod: false
+        )
 
         // Note:
         // `Objective-C` protocol does not currently support optional properties
@@ -313,7 +416,11 @@ extension ObjCProtocolProtocol {
             options: effectiveOptions,
             context: &context
         )
-        return .init(value: value, diagnostics: context.diagnostics)
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
     }
 
     private func _readInfo(
@@ -323,6 +430,9 @@ extension ObjCProtocolProtocol {
         context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
         let name = knownName ?? mangledName(in: machO)
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.protocol(
+            name: name
+        )
 
         let protocols = referencedProtocolInfos(
             in: machO,
@@ -330,35 +440,53 @@ extension ObjCProtocolProtocol {
             context: &context
         )
 
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readLoadedPropertyList(field: ._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readLoadedPropertyList(field: .instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readLoadedMethodList(field: .instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
-        let optionalClassMethodsList = optionalClassMethodList(in: machO)
-        let optionalClassMethods = optionalClassMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let optionalClassMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .optionalClassMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalClassMethod,
+            isClassMethod: true
+        )
 
-        let optionalMethodsList = optionalInstanceMethodList(in: machO)
-        let optionalMethods = optionalMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let optionalMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .optionalInstanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalInstanceMethod,
+            isClassMethod: false
+        )
 
         // Note:
         // `Objective-C` protocol does not currently support optional properties
@@ -747,7 +875,8 @@ extension ObjCClassProtocol {
             value: value,
             diagnostics: context.diagnostics,
             memberListDiagnostics: context.memberListDiagnostics,
-            fieldDiagnostics: fieldDiagnostics
+            fieldDiagnostics: fieldDiagnostics,
+            tableDiagnostics: context.tableDiagnostics
         )
     }
 
@@ -779,6 +908,9 @@ extension ObjCClassProtocol {
             metaData = value
         }
         let imagePath = machO.imagePath
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.class(
+            name: name
+        )
         let subject = ObjCMetadataFieldDiagnostic.Subject.namedClass(
             name: name,
             objectOffset: offset
@@ -792,10 +924,18 @@ extension ObjCClassProtocol {
             )
 
         var ivars: [ObjCIvarInfo] = []
-        if let ivarList = data.ivarList(in: machO),
-           let entries = ivarList.ivars(in: machO) {
-            ivars.reserveCapacity(entries.count)
-            for (index, ivar) in entries.enumerated() {
+        let ivarEntries = ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: data.readFileIvarList(in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .ivar,
+            context: &context,
+            entryStride: { $0.entrySize },
+            read: { $0.readIvars(in: machO) },
+            transform: { Optional($0) }
+        )
+        ivars.reserveCapacity(ivarEntries.count)
+        for (index, ivar) in ivarEntries.enumerated() {
                 guard let ivarName = ivar.name(in: machO),
                       let type = ivar.type(in: machO) else {
                     continue
@@ -823,60 +963,109 @@ extension ObjCClassProtocol {
                         )
                     )
                 }
-            }
         }
 
         // Instance
-        let properties = data
-            .propertyListResolutions(in: machO)
-            .memberValues(
-                className: name,
+        let properties: [ObjCPropertyInfo]
+        if data.layout.baseProperties & 1 == 1 {
+            properties = data
+                .propertyListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceProperty,
+                    context: &context,
+                    tableKind: .instanceProperty,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readProperties(in: source) },
+                    transform: { $0.info(isClassProperty: false) }
+                )
+        } else {
+            properties = context.propertyInfos(
+                from: data.readFilePropertyList(in: machO),
+                in: machO,
+                subject: tableSubject,
                 kind: .instanceProperty,
-                context: &context
-            ) { source, list in
-                list.properties(in: source).compactMap {
-                    $0.info(isClassProperty: false)
-                }
-            }
+                isClassProperty: false
+            )
+        }
 
-        let methods = data
-            .methodListResolutions(in: machO)
-            .memberValues(
-                className: name,
+        let methods: [ObjCMethodInfo]
+        if data.layout.baseMethods & 1 == 1 {
+            methods = data
+                .methodListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceMethod,
+                    context: &context,
+                    tableKind: .instanceMethod,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readMethods(in: source) },
+                    transform: { $0.info(isClassMethod: false) }
+                )
+        } else {
+            methods = context.methodInfos(
+                from: data.readFileMethodList(in: machO),
+                in: machO,
+                subject: tableSubject,
                 kind: .instanceMethod,
-                context: &context
-            ) { source, list in
-                (list.methods(in: source) ?? []).compactMap {
-                    $0.info(isClassMethod: false)
-                }
-            }
+                isClassMethod: false
+            )
+        }
 
         // Meta
         let classProperties: [ObjCPropertyInfo]
         let classMethods: [ObjCMethodInfo]
         if let metaData {
-            classProperties = metaData
-                .propertyListResolutions(in: targetMachO)
-                .memberValues(
-                    className: name,
+            if metaData.layout.baseProperties & 1 == 1 {
+                classProperties = metaData
+                    .propertyListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classProperty,
+                        context: &context,
+                        tableKind: .classProperty,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readProperties(in: source) },
+                        transform: { $0.info(isClassProperty: true) }
+                    )
+            } else {
+                classProperties = context.propertyInfos(
+                    from: metaData.readFilePropertyList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
                     kind: .classProperty,
-                    context: &context
-                ) { source, list in
-                    list.properties(in: source).compactMap {
-                        $0.info(isClassProperty: true)
-                    }
-                }
-            classMethods = metaData
-                .methodListResolutions(in: targetMachO)
-                .memberValues(
-                    className: name,
+                    isClassProperty: true
+                )
+            }
+            if metaData.layout.baseMethods & 1 == 1 {
+                classMethods = metaData
+                    .methodListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classMethod,
+                        context: &context,
+                        tableKind: .classMethod,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readMethods(in: source) },
+                        transform: { $0.info(isClassMethod: true) }
+                    )
+            } else {
+                classMethods = context.methodInfos(
+                    from: metaData.readFileMethodList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
                     kind: .classMethod,
-                    context: &context
-                ) { source, list in
-                    (list.methods(in: source) ?? []).compactMap {
-                        $0.info(isClassMethod: true)
-                    }
-                }
+                    isClassMethod: true
+                )
+            }
         } else {
             classProperties = []
             classMethods = []
@@ -969,7 +1158,8 @@ extension ObjCClassProtocol {
             value: value,
             diagnostics: context.diagnostics,
             memberListDiagnostics: context.memberListDiagnostics,
-            fieldDiagnostics: fieldDiagnostics
+            fieldDiagnostics: fieldDiagnostics,
+            tableDiagnostics: context.tableDiagnostics
         )
     }
 
@@ -981,7 +1171,26 @@ extension ObjCClassProtocol {
         context: inout ObjCProtocolTraversalContext,
         fieldDiagnostics: inout [ObjCMetadataFieldDiagnostic]
     ) -> ObjCClassInfo? {
-        guard let (targetMachO, meta) = metaClass(in: machO) else { return nil }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.class(
+            name: name
+        )
+        let targetMachO: MachOImage
+        let meta: Self
+        switch readLoadedRelatedClass(field: .isa, in: machO) {
+        case .absent:
+            return nil
+        case let .failure(provenance, reason):
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: provenance,
+                reason: reason,
+                subject: tableSubject,
+                role: .metaclass,
+                context: &context
+            )
+            return nil
+        case .value(let value):
+            (targetMachO, meta) = value
+        }
 
         let metaData: ClassROData?
         switch meta.readClassRODataForInfo(in: targetMachO) {
@@ -1013,10 +1222,18 @@ extension ObjCClassProtocol {
             )
 
         var ivars: [ObjCIvarInfo] = []
-        if let ivarList = data.ivarList(in: machO),
-           let entries = ivarList.ivars(in: machO) {
-            ivars.reserveCapacity(entries.count)
-            for (index, ivar) in entries.enumerated() {
+        let ivarEntries = ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: data.readLoadedIvarList(in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .ivar,
+            context: &context,
+            entryStride: { $0.entrySize },
+            read: { $0.readIvars(in: machO) },
+            transform: { Optional($0) }
+        )
+        ivars.reserveCapacity(ivarEntries.count)
+        for (index, ivar) in ivarEntries.enumerated() {
                 let ivarName = ivar.name(in: machO)
                 guard let type = ivar.type(in: machO) else { continue }
                 switch ivar.readOffset(in: machO) {
@@ -1042,66 +1259,130 @@ extension ObjCClassProtocol {
                         )
                     )
                 }
-            }
         }
 
         // Instance
-        let properties = data
-            .propertyListResolutions(in: machO)
-            .memberValues(
-                className: name,
+        let properties: [ObjCPropertyInfo]
+        if data.layout.baseProperties & 1 == 1 {
+            properties = data
+                .propertyListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceProperty,
+                    context: &context,
+                    tableKind: .instanceProperty,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readProperties(in: source) },
+                    transform: { $0.info(isClassProperty: false) }
+                )
+        } else {
+            properties = context.propertyInfos(
+                from: data.readLoadedPropertyList(in: machO),
+                in: machO,
+                subject: tableSubject,
                 kind: .instanceProperty,
-                context: &context
-            ) { source, list in
-                list.properties(in: source).compactMap {
-                    $0.info(isClassProperty: false)
-                }
-            }
+                isClassProperty: false
+            )
+        }
 
-        let methods = data
-            .methodListResolutions(in: machO)
-            .memberValues(
-                className: name,
+        let methods: [ObjCMethodInfo]
+        if data.layout.baseMethods & 1 == 1 {
+            methods = data
+                .methodListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceMethod,
+                    context: &context,
+                    tableKind: .instanceMethod,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readMethods(in: source) },
+                    transform: { $0.info(isClassMethod: false) }
+                )
+        } else {
+            methods = context.methodInfos(
+                from: data.readLoadedMethodList(in: machO),
+                in: machO,
+                subject: tableSubject,
                 kind: .instanceMethod,
-                context: &context
-            ) { source, list in
-                list.methods(in: source).compactMap {
-                    $0.info(isClassMethod: false)
-                }
-            }
+                isClassMethod: false
+            )
+        }
 
         // Meta
         let classProperties: [ObjCPropertyInfo]
         let classMethods: [ObjCMethodInfo]
         if let metaData {
-            classProperties = metaData
-                .propertyListResolutions(in: targetMachO)
-                .memberValues(
-                    className: name,
+            if metaData.layout.baseProperties & 1 == 1 {
+                classProperties = metaData
+                    .propertyListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classProperty,
+                        context: &context,
+                        tableKind: .classProperty,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readProperties(in: source) },
+                        transform: { $0.info(isClassProperty: true) }
+                    )
+            } else {
+                classProperties = context.propertyInfos(
+                    from: metaData.readLoadedPropertyList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
                     kind: .classProperty,
-                    context: &context
-                ) { source, list in
-                    list.properties(in: source).compactMap {
-                        $0.info(isClassProperty: true)
-                    }
-                }
-            classMethods = metaData
-                .methodListResolutions(in: targetMachO)
-                .memberValues(
-                    className: name,
+                    isClassProperty: true
+                )
+            }
+            if metaData.layout.baseMethods & 1 == 1 {
+                classMethods = metaData
+                    .methodListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classMethod,
+                        context: &context,
+                        tableKind: .classMethod,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readMethods(in: source) },
+                        transform: { $0.info(isClassMethod: true) }
+                    )
+            } else {
+                classMethods = context.methodInfos(
+                    from: metaData.readLoadedMethodList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
                     kind: .classMethod,
-                    context: &context
-                ) { source, list in
-                    list.methods(in: source).compactMap {
-                        $0.info(isClassMethod: true)
-                    }
-                }
+                    isClassMethod: true
+                )
+            }
         } else {
             classProperties = []
             classMethods = []
         }
 
-        let superClassName = superClassName(in: machO)
+        let superClassName: String?
+        switch readLoadedRelatedClass(field: .superclass, in: machO) {
+        case .absent:
+            superClassName = nil
+        case let .failure(provenance, reason):
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: provenance,
+                reason: reason,
+                subject: tableSubject,
+                role: .superclass,
+                context: &context
+            )
+            superClassName = nil
+        case .value(let value):
+            superClassName = loadedRelatedClassName(value)
+        }
 
         return .init(
             name: name,
@@ -1139,6 +1420,26 @@ extension ObjCClassProtocol {
             )
         )
     }
+
+    private func loadedRelatedClassName(
+        _ relation: (MachOImage, Self)
+    ) -> String? {
+        let (machO, cls) = relation
+        var data: ClassROData?
+        if let direct = cls.classROData(in: machO) {
+            data = direct
+        }
+        if let rw = cls.classRWData(in: machO) {
+            if let readOnly = rw.classROData(in: machO) {
+                data = readOnly
+            }
+            if let ext = rw.ext(in: machO),
+               let readOnly = ext.classROData(in: machO) {
+                data = readOnly
+            }
+        }
+        return data?.name(in: machO)
+    }
 }
 
 // MARK: Category
@@ -1157,24 +1458,80 @@ extension ObjCCategoryProtocol {
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCMetadataReadResult<ObjCCategoryInfo> {
-        let categoryName = name(in: machO) ?? "<unknown>"
-        let targetClassName = className(in: machO) ?? "<unknown>"
-        var context = ObjCProtocolTraversalContext(
-            subject: .category(className: targetClassName, name: categoryName)
+        let categoryName = name(in: machO)
+        let targetClassName: String?
+        let relationshipFailure: (
+            provenance: ObjCMetadataTableDiagnostic.Provenance,
+            reason: ObjCMetadataTableDiagnostic.Failure
+        )?
+        if isCatlist2 {
+            switch readLoadedStubClass(in: machO) {
+            case .absent, .value:
+                relationshipFailure = nil
+            case let .failure(provenance, reason):
+                relationshipFailure = (provenance, reason)
+            }
+            targetClassName = categorySymbolClassName(in: machO)
+        } else {
+            switch readLoadedClass(in: machO) {
+            case .absent:
+                targetClassName = categorySymbolClassName(in: machO)
+                relationshipFailure = nil
+            case let .failure(provenance, reason):
+                targetClassName = categorySymbolClassName(in: machO)
+                relationshipFailure = (provenance, reason)
+            case .value(let value):
+                targetClassName = loadedCategoryClassName(value)
+                relationshipFailure = nil
+            }
+        }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: targetClassName ?? "<unknown>",
+            name: categoryName ?? "<unknown>"
         )
-        let value = _readInfo(in: machO, options: options, context: &context)
-        return .init(value: value, diagnostics: context.diagnostics)
+        var context = ObjCProtocolTraversalContext(
+            subject: .category(
+                className: targetClassName ?? "<unknown>",
+                name: categoryName ?? "<unknown>"
+            )
+        )
+        if let relationshipFailure {
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: relationshipFailure.provenance,
+                reason: relationshipFailure.reason,
+                subject: tableSubject,
+                role: isCatlist2 ? .categoryStubClass : .categoryClass,
+                context: &context
+            )
+        }
+        let value = _readInfo(
+            in: machO,
+            name: categoryName,
+            className: targetClassName,
+            options: options,
+            context: &context
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
     }
 
     private func _readInfo(
         in machO: MachOImage,
+        name: String?,
+        className: String?,
         options: ObjCInfoOptions,
         context: inout ObjCProtocolTraversalContext
     ) -> ObjCCategoryInfo? {
-        guard let name = name(in: machO),
-              let className = className(in: machO) else {
+        guard let name, let className else {
             return nil
         }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: className,
+            name: name
+        )
 
         let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
@@ -1183,26 +1540,38 @@ extension ObjCCategoryProtocol {
             )
 
         // Instance
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readLoadedPropertyList(at: layout.instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readLoadedMethodList(at: layout.instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
         // Meta
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readLoadedPropertyList(at: layout._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readLoadedMethodList(at: layout.classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
         return .init(
             name: name,
@@ -1235,7 +1604,11 @@ extension ObjCCategoryProtocol {
             subject: .category(className: targetClassName, name: categoryName)
         )
         let value = _readInfo(in: machO, options: options, context: &context)
-        return .init(value: value, diagnostics: context.diagnostics)
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
     }
 
     private func _readInfo(
@@ -1247,6 +1620,10 @@ extension ObjCCategoryProtocol {
               let className = className(in: machO) else {
             return nil
         }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: className,
+            name: name
+        )
 
         let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
@@ -1255,26 +1632,54 @@ extension ObjCCategoryProtocol {
             )
 
         // Instance
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readFilePropertyList(
+                at: layout.instanceProperties,
+                field: .instanceProperties,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readFileMethodList(
+                at: layout.instanceMethods,
+                field: .instanceMethods,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
         // Meta
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readFilePropertyList(
+                at: layout._classProperties,
+                field: ._classProperties,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readFileMethodList(
+                at: layout.classMethods,
+                field: .classMethods,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
         return .init(
             name: name,
@@ -1288,13 +1693,54 @@ extension ObjCCategoryProtocol {
     }
 }
 
-fileprivate extension ObjCRelativeListResolution where Failure == ObjCRelativeListFailure {
-    func memberValues<Value>(
+private extension ObjCCategoryProtocol {
+    func categorySymbolClassName(in machO: MachOImage) -> String? {
+        guard let section = machO.sectionNumber(for: .__objc_const),
+              let symbol = machO.symbol(for: offset, inSection: section),
+              symbol.name.starts(with: "__CATEGORY_") else {
+            return nil
+        }
+        return symbol.name
+            .replacingOccurrences(of: "__CATEGORY_", with: "")
+            .components(separatedBy: "_$_")
+            .first
+    }
+
+    func loadedCategoryClassName(
+        _ relation: (MachOImage, ObjCClass)
+    ) -> String? {
+        let (machO, cls) = relation
+        var data: ObjCClass.ClassROData?
+        if let direct = cls.classROData(in: machO) {
+            data = direct
+        }
+        if let rw = cls.classRWData(in: machO) {
+            if let readOnly = rw.classROData(in: machO) {
+                data = readOnly
+            }
+            if let ext = rw.ext(in: machO),
+               let readOnly = ext.classROData(in: machO) {
+                data = readOnly
+            }
+        }
+        return data?.name(in: machO)
+    }
+}
+
+extension ObjCRelativeListResolution where
+    Failure == ObjCRelativeListFailure,
+    Source: ObjCMetadataTableSource,
+    List: EntrySizeListProtocol
+{
+    func memberValues<Value, Output>(
         className: String,
         kind: ObjCMemberListDiagnostic.Kind,
         context: inout ObjCProtocolTraversalContext,
-        read: (Source, List) -> [Value]
-    ) -> [Value] {
+        tableKind: ObjCMetadataTableDiagnostic.MemberKind,
+        entryStride: (Source, List) -> Int,
+        read: (Source, List) -> ObjCMemberTableReadOutcome<Value>,
+        transform: (Value) -> Output?
+    ) -> [Output] {
         switch self {
         case .absent:
             return []
@@ -1306,7 +1752,7 @@ fileprivate extension ObjCRelativeListResolution where Failure == ObjCRelativeLi
             )
             return []
         case .entries(let entries):
-            var values: [Value] = []
+            var values: [Output] = []
             for entry in entries {
                 switch entry {
                 case .failure(let failure):
@@ -1316,7 +1762,18 @@ fileprivate extension ObjCRelativeListResolution where Failure == ObjCRelativeLi
                         kind: kind
                     )
                 case let .resolved(source, list):
-                    values.append(contentsOf: read(source, list))
+                    values.append(
+                        contentsOf: ObjCMetadataTableDiagnosticRecorder.memberValues(
+                            from: read(source, list),
+                            list: list,
+                            in: source,
+                            subject: .class(name: className),
+                            kind: tableKind,
+                            context: &context,
+                            entryStride: entryStride(source, list),
+                            transform: transform
+                        )
+                    )
                 }
             }
             return values

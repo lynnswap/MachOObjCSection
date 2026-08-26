@@ -6,7 +6,7 @@
 import Foundation
 @_spi(Support) import MachOKit
 
-internal enum ObjCLoadedImageRead<Value> {
+internal enum ObjCMetadataReferenceRead<Value> {
     case absent
     case value(Value)
     case failure(
@@ -79,7 +79,7 @@ internal enum ObjCLoadedImageReader {
         from rawPointer: Pointer,
         in machO: MachOImage,
         as layoutType: Layout.Type
-    ) -> ObjCLoadedImageRead<(layout: Layout, offset: Int, address: UInt)> {
+    ) -> ObjCMetadataReferenceRead<(layout: Layout, offset: Int, address: UInt)> {
         guard rawPointer != 0 else { return .absent }
         guard let address = canonicalAddress(rawPointer, in: machO) else {
             let rawValue = UInt64(exactly: rawPointer) ?? 0
@@ -124,7 +124,7 @@ internal enum ObjCLoadedImageReader {
         in machO: MachOImage,
         validateList: (List) -> ObjCMetadataTableFailure?,
         makeList: (EntrySizeListHeader, Int) -> List
-    ) -> ObjCLoadedImageRead<List> {
+    ) -> ObjCMetadataReferenceRead<List> {
         switch readLayout(
             from: rawPointer,
             in: machO,
@@ -153,7 +153,7 @@ internal enum ObjCLoadedImageReader {
         from rawPointer: Pointer,
         in machO: MachOImage,
         as layoutType: Layout.Type
-    ) -> ObjCLoadedImageRead<(
+    ) -> ObjCMetadataReferenceRead<(
         image: MachOImage,
         layout: Layout,
         offset: Int,

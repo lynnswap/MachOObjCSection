@@ -26,6 +26,7 @@ internal struct ObjCProtocolTraversalContext {
     private(set) var edgeDepth: Int
     private(set) var diagnostics: [ObjCProtocolDiagnostic] = []
     private(set) var memberListDiagnostics: [ObjCMemberListDiagnostic] = []
+    private(set) var tableDiagnostics: [ObjCMetadataTableDiagnostic] = []
 
     init(
         subject: ObjCProtocolDiagnostic.Subject,
@@ -158,6 +159,10 @@ internal struct ObjCProtocolTraversalContext {
                 .init(subject: subject, protocolOffset: protocolOffset)
             )
         )
+    }
+
+    mutating func record(tableDiagnostic: ObjCMetadataTableDiagnostic) {
+        tableDiagnostics.append(tableDiagnostic)
     }
 }
 

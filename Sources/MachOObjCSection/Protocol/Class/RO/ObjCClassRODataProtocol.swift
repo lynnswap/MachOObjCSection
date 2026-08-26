@@ -271,7 +271,7 @@ extension ObjCClassRODataProtocol {
 extension ObjCClassRODataProtocol {
     internal func readLoadedMethodList(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+    ) -> ObjCMetadataReferenceRead<ObjCMethodList> {
         guard layout.baseMethods & 1 == 0 else { return .absent }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: layout.baseMethods,
@@ -294,7 +294,7 @@ extension ObjCClassRODataProtocol {
 
     internal func readLoadedPropertyList(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+    ) -> ObjCMetadataReferenceRead<ObjCPropertyList> {
         guard layout.baseProperties & 1 == 0 else { return .absent }
         return ObjCLoadedImageReader.readEntrySizeList(
             from: layout.baseProperties,
@@ -317,7 +317,7 @@ extension ObjCClassRODataProtocol {
 
     internal func readLoadedIvarList(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCIvarList> {
+    ) -> ObjCMetadataReferenceRead<ObjCIvarList> {
         ObjCLoadedImageReader.readEntrySizeList(
             from: layout.ivars,
             in: machO,
@@ -459,7 +459,7 @@ extension ObjCClassRODataProtocol {
 extension ObjCClassRODataProtocol {
     internal func readLoadedMethodRelativeListList(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCMethodRelativeListList> {
+    ) -> ObjCMetadataReferenceRead<ObjCMethodRelativeListList> {
         guard layout.baseMethods & 1 == 1 else { return .absent }
         let pointer = layout.baseMethods & ~1
         switch ObjCLoadedImageReader.readLayout(
@@ -483,7 +483,7 @@ extension ObjCClassRODataProtocol {
 
     internal func readLoadedPropertyRelativeListList(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCPropertyRelativeListList> {
+    ) -> ObjCMetadataReferenceRead<ObjCPropertyRelativeListList> {
         guard layout.baseProperties & 1 == 1 else { return .absent }
         let pointer = layout.baseProperties & ~1
         switch ObjCLoadedImageReader.readLayout(

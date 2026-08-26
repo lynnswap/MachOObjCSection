@@ -229,7 +229,7 @@ extension ObjCClassProtocol {
     internal func readLoadedRelatedClass(
         field: LayoutField,
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<(MachOImage, Self)> {
+    ) -> ObjCMetadataReferenceRead<(MachOImage, Self)> {
         let rawPointer = layout[keyPath: keyPath(of: field)]
         switch ObjCLoadedImageReader.readRelatedLayout(
             from: rawPointer,

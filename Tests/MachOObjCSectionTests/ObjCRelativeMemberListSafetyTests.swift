@@ -304,6 +304,45 @@ final class ObjCRelativeMemberListSafetyTests: XCTestCase {
             count: 4
         )
         XCTAssertEqual(context.memberListDiagnostics.map(\.location), expectedLocations)
+        XCTAssertTrue(
+            context.tableDiagnostics.isEmpty,
+            "Relative outer failures remain owned by memberListDiagnostics"
+        )
+    }
+
+    func testResolvedRelativeInnerEntryOutcomesUseTableDiagnosticsOnly() throws {
+        let fixture = try SyntheticRelativeMemberFileFixture()
+        let resolution: ObjCMemberListResolution<MachOFile, ObjCMethodList> = .entries([
+            .resolved(fixture.machO, fixture.diagnosticMethodList),
+        ])
+        var context = ObjCProtocolTraversalContext(subject: .class(name: "Owner"))
+
+        let methods = resolution.memberValues(
+            className: "Owner",
+            kind: .instanceMethod,
+            context: &context,
+            tableKind: .instanceMethod,
+            entryStride: { source, list in
+                list.expectedEntrySize(is64Bit: source.is64Bit)
+            },
+            read: { source, list in list.readMethods(in: source) },
+            transform: { $0.info(isClassMethod: false) }
+        )
+
+        XCTAssertEqual(methods.map(\.name), ["relativeDiagnostic0", "relativeDiagnostic2"])
+        XCTAssertTrue(context.memberListDiagnostics.isEmpty)
+        guard context.tableDiagnostics.count == 1,
+              case .entry(index: 1, provenance: _) = context.tableDiagnostics[0].site else {
+            return XCTFail("Expected one inner entry diagnostic")
+        }
+        XCTAssertEqual(
+            context.tableDiagnostics[0].owner,
+            .member(subject: .class(name: "Owner"), kind: .instanceMethod)
+        )
+        XCTAssertEqual(
+            context.tableDiagnostics[0].failure,
+            .invalidMethodImplementationOffset
+        )
     }
 
     func testLoadedSingularMethodAndPropertyResolutionMatchesPluralSafety() {
@@ -662,6 +701,7 @@ private final class SyntheticRelativeMemberFileFixture {
     let machO: MachOFile
     let methodRelative: ObjCMethodRelativeListList
     let propertyRelative: ObjCPropertyRelativeListList
+    let diagnosticMethodList: ObjCMethodList
     let imageIndices = [199, 1194, 1194, 0]
     let truncatedMethodListOffset = 0x4ff8
     private let url: URL
@@ -674,6 +714,7 @@ private final class SyntheticRelativeMemberFileFixture {
         let methodListBase = 0x2000
         let propertyListBase = 0x3000
         let listStride = 0x100
+        let diagnosticMethodListOffset = 0x4000
         let outerStride = MemoryLayout<RelativeListListEntry.Layout>.size + 8
         var data = Data(count: fileSize)
 
@@ -755,12 +796,41 @@ private final class SyntheticRelativeMemberFileFixture {
             at: truncatedMethodListOffset
         )
 
+        let diagnosticHeader = EntrySizeListHeader(
+            layout: .init(
+                entsizeAndFlags: UInt32(MemoryLayout<ObjCMethod.Pointer64>.size),
+                count: 3
+            )
+        )
+        data.store(diagnosticHeader, at: diagnosticMethodListOffset)
+        for index in 0..<3 {
+            let nameOffset = 0x4400 + index * 0x80
+            let typeOffset = nameOffset + 0x40
+            data.storeCString("relativeDiagnostic\(index)", at: nameOffset)
+            data.storeCString("v@:", at: typeOffset)
+            data.store(
+                ObjCMethod.Pointer64(
+                    name: vmAddress + UInt64(nameOffset),
+                    types: vmAddress + UInt64(typeOffset),
+                    imp: index == 1 ? 1 : vmAddress + 0x100
+                ),
+                at: diagnosticMethodListOffset
+                    + MemoryLayout<EntrySizeListHeader>.size
+                    + index * MemoryLayout<ObjCMethod.Pointer64>.size
+            )
+        }
+
         url = FileManager.default.temporaryDirectory
             .appendingPathComponent("MachOObjCSection-relative-members-\(UUID().uuidString)")
         try data.write(to: url)
         machO = try MachOFile(url: url)
         methodRelative = .init(offset: methodRelativeOffset, header: outerHeader)
         propertyRelative = .init(offset: propertyRelativeOffset, header: outerHeader)
+        diagnosticMethodList = .init(
+            offset: diagnosticMethodListOffset,
+            header: diagnosticHeader,
+            is64Bit: true
+        )
     }
 
     func location(for entry: RelativeListListEntry) -> ObjCRelativeFileLocation? {
@@ -797,6 +867,11 @@ private extension Data {
         Swift.withUnsafeBytes(of: &value) { bytes in
             replaceSubrange(offset..<(offset + bytes.count), with: bytes)
         }
+    }
+
+    mutating func storeCString(_ value: String, at offset: Int) {
+        let bytes = Array(value.utf8) + [0]
+        replaceSubrange(offset..<(offset + bytes.count), with: bytes)
     }
 }
 

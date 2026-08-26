@@ -127,6 +127,14 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case unreadableFileRange(offset: UInt64, byteCount: Int)
         case unreadableImageRange(address: UInt, byteCount: Int)
 
+        case invalidFileListOffset(UInt64)
+        case unresolvedListPointer
+        case missingListBackingData
+        case unreadableFileHeader(offset: UInt64, byteCount: Int)
+        case invalidEntryLogicalOffset
+        case invalidMethodImplementationOffset
+        case invalidRelativeDisplacement
+
         case invalidSectionByteCount(byteCount: UInt64, pointerSize: Int)
         case invalidSectionCoordinates(
             sectionAddress: UInt64,

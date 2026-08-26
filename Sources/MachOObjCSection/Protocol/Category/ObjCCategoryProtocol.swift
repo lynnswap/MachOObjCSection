@@ -226,7 +226,7 @@ extension ObjCCategoryProtocol {
 extension ObjCCategoryProtocol {
     internal func readLoadedClass(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<(MachOImage, ObjCClass)> {
+    ) -> ObjCMetadataReferenceRead<(MachOImage, ObjCClass)> {
         switch ObjCLoadedImageReader.readRelatedLayout(
             from: layout.cls,
             in: machO,
@@ -245,7 +245,7 @@ extension ObjCCategoryProtocol {
 
     internal func readLoadedStubClass(
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<(MachOImage, ObjCStubClass)> {
+    ) -> ObjCMetadataReferenceRead<(MachOImage, ObjCStubClass)> {
         switch ObjCLoadedImageReader.readRelatedLayout(
             from: layout.cls,
             in: machO,
@@ -494,7 +494,7 @@ extension ObjCCategoryProtocol {
     internal func readLoadedMethodList(
         at pointer: Layout.Pointer,
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCMethodList> {
+    ) -> ObjCMetadataReferenceRead<ObjCMethodList> {
         guard pointer != 0 else { return .absent }
         guard pointer & 1 == 0 else {
             return .failure(
@@ -527,7 +527,7 @@ extension ObjCCategoryProtocol {
     internal func readLoadedPropertyList(
         at pointer: Layout.Pointer,
         in machO: MachOImage
-    ) -> ObjCLoadedImageRead<ObjCPropertyList> {
+    ) -> ObjCMetadataReferenceRead<ObjCPropertyList> {
         guard pointer != 0 else { return .absent }
         guard pointer & 1 == 0 else {
             return .failure(
