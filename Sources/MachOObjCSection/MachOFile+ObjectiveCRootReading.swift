@@ -384,6 +384,9 @@ extension MachOFile.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
+        guard section.layout.size > 0 else {
+            return .init(values: [], diagnostics: [])
+        }
         guard let coordinates = checkedObjCSectionCoordinates(section, in: segment) else {
             return invalidCoordinatesResult(
                 owner: owner,
@@ -435,6 +438,9 @@ extension MachOFile.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
+        guard section.layout.size > 0 else {
+            return .init(values: [], diagnostics: [])
+        }
         guard let coordinates = checkedObjCSectionCoordinates(section, in: segment) else {
             return invalidCoordinatesResult(
                 owner: owner,
@@ -517,11 +523,6 @@ extension MachOFile.ObjectiveC {
             section: root,
             pointerWidth: pointerWidth
         )
-        // A removed/coalesced empty section can retain offset zero at a segment
-        // boundary. It is complete without a linear-mapping or backing lookup.
-        guard rawByteCount > 0 else {
-            return .init(values: [], diagnostics: [])
-        }
         if let fileMappingFailure {
             return tableFailure(
                 owner: owner,

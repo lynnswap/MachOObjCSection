@@ -194,7 +194,9 @@ final class ObjCFileRootSafetyTests: XCTestCase {
                 architecture: architecture,
                 root: .classList,
                 sectionByteCount: 0,
-                sectionFileOffset: 0
+                sectionFileOffset: 0,
+                sectionVirtualMemoryOffset: FileRootFixture.fileSize,
+                segmentFileOffset: 0x200
             )
             let result = emptyMismatch.machO.objc.readRoots()
             XCTAssertEqual(
@@ -369,6 +371,7 @@ private final class FileRootFixture {
         headerPrefix: Int = 0,
         sectionFileOffset: Int = FileRootFixture.tableOffset,
         sectionVirtualMemoryOffset: Int = FileRootFixture.tableOffset,
+        segmentFileOffset: Int = 0,
         declaredSegmentSize: Int? = nil,
         declaredSegmentSize64: UInt64? = nil,
         sectionAddress32: UInt32? = nil,
@@ -387,6 +390,7 @@ private final class FileRootFixture {
                 sectionByteCount: sectionByteCount,
                 sectionFileOffset: sectionFileOffset,
                 sectionVirtualMemoryOffset: sectionVirtualMemoryOffset,
+                segmentFileOffset: segmentFileOffset,
                 declaredSegmentSize: declaredSegmentSize,
                 declaredSegmentSize64: declaredSegmentSize64
             )
@@ -398,6 +402,7 @@ private final class FileRootFixture {
                 sectionByteCount: sectionByteCount,
                 sectionFileOffset: sectionFileOffset,
                 sectionVirtualMemoryOffset: sectionVirtualMemoryOffset,
+                segmentFileOffset: segmentFileOffset,
                 declaredSegmentSize: declaredSegmentSize,
                 sectionAddress: sectionAddress32
             )
@@ -418,6 +423,7 @@ private final class FileRootFixture {
         sectionByteCount: UInt64,
         sectionFileOffset: Int,
         sectionVirtualMemoryOffset: Int,
+        segmentFileOffset: Int,
         declaredSegmentSize: Int?,
         declaredSegmentSize64: UInt64?
     ) {
@@ -440,7 +446,7 @@ private final class FileRootFixture {
         setFileRootMachOName("__DATA", in: &segment.segname)
         segment.vmaddr = FileRootArchitecture.bit64.virtualMemoryAddress
         segment.vmsize = segmentSize
-        segment.fileoff = 0
+        segment.fileoff = UInt64(segmentFileOffset)
         segment.filesize = segmentSize
         segment.maxprot = VM_PROT_READ
         segment.initprot = VM_PROT_READ
@@ -468,6 +474,7 @@ private final class FileRootFixture {
         sectionByteCount: UInt64,
         sectionFileOffset: Int,
         sectionVirtualMemoryOffset: Int,
+        segmentFileOffset: Int,
         declaredSegmentSize: Int?,
         sectionAddress: UInt32?
     ) {
@@ -489,7 +496,7 @@ private final class FileRootFixture {
         setFileRootMachOName("__DATA", in: &segment.segname)
         segment.vmaddr = UInt32(FileRootArchitecture.bit32.virtualMemoryAddress)
         segment.vmsize = segmentSize
-        segment.fileoff = 0
+        segment.fileoff = UInt32(segmentFileOffset)
         segment.filesize = segmentSize
         segment.maxprot = VM_PROT_READ
         segment.initprot = VM_PROT_READ
