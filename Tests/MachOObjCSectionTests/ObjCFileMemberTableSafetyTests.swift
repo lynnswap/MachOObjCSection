@@ -28,21 +28,44 @@ final class ObjCFileMemberTableSafetyTests: XCTestCase {
             .relativeDirectSelectors,
             .relativeDirectSelectorsAndTypes,
         ]
-        for kind in kinds {
-            let fixture = try DirectMemberFileFixture(is64Bit: true)
-            let list = fixture.writeRelativeMethod(kind: kind)
+        for is64Bit in [false, true] {
+            for kind in kinds {
+                let fixture = try DirectMemberFileFixture(is64Bit: is64Bit)
+                let list = fixture.writeRelativeMethod(kind: kind)
 
-            let outcome = list.readMethods(in: fixture.machO)
+                let outcome = list.readMethods(in: fixture.machO)
 
-            XCTAssertEqual(outcome.values?.map(\.name), ["relativeName"], "Unexpected \(kind)")
-            XCTAssertEqual(outcome.values?.map(\.types), ["v@:"], "Unexpected \(kind)")
-            XCTAssertEqual(outcome.values?.map(\.imp), [UInt64(DirectMemberFileFixture.impOffset)])
-            XCTAssertTrue(outcome.success?.failures.isEmpty == true)
-            XCTAssertEqual(
-                list.methods(in: fixture.machO)?.map(\.name),
-                outcome.values?.map(\.name)
-            )
+                XCTAssertEqual(
+                    outcome.values?.map(\.name),
+                    ["relativeName"],
+                    "Unexpected \(kind), is64Bit=\(is64Bit)"
+                )
+                XCTAssertEqual(outcome.values?.map(\.types), ["v@:"])
+                XCTAssertEqual(
+                    outcome.values?.map(\.imp),
+                    [UInt64(DirectMemberFileFixture.impOffset)]
+                )
+                XCTAssertTrue(outcome.success?.failures.isEmpty == true)
+                XCTAssertEqual(
+                    list.methods(in: fixture.machO)?.map(\.name),
+                    outcome.values?.map(\.name)
+                )
+            }
         }
+    }
+
+    func test32BitRelativeIndirectReadsFourByteSelectorReferenceAtExactEOF() throws {
+        let fixture = try DirectMemberFileFixture(
+            is64Bit: false,
+            fileSize: DirectMemberFileFixture.indirectNamePointerOffset
+                + MemoryLayout<UInt32>.size
+        )
+        let list = fixture.writeRelativeMethod(kind: .relativeIndirect)
+
+        let outcome = list.readMethods(in: fixture.machO)
+
+        XCTAssertEqual(outcome.values?.map(\.name), ["relativeName"])
+        XCTAssertTrue(outcome.success?.failures.isEmpty == true)
     }
 
     func testRelativeMethodArithmeticSkipsOnlyTheInvalidEntry() throws {
@@ -403,10 +426,16 @@ private final class DirectMemberFileFixture {
     }
 
     func writeRelativeMethod(kind: ObjCMethod.Kind) -> ObjCMethodList {
-        precondition(is64Bit)
         data.storeCString("relativeName", at: Self.nameOffset)
         data.storeCString("v@:", at: Self.typeOffset)
-        data.store(address(Self.nameOffset), at: Self.indirectNamePointerOffset)
+        if is64Bit {
+            data.store(address(Self.nameOffset), at: Self.indirectNamePointerOffset)
+        } else {
+            data.store(
+                UInt32(address(Self.nameOffset)),
+                at: Self.indirectNamePointerOffset
+            )
+        }
         let entryOffset = Self.listOffset + MemoryLayout<EntrySizeListHeader>.size
 
         let flags: UInt32
@@ -456,7 +485,7 @@ private final class DirectMemberFileFixture {
         )
         data.store(header, at: Self.listOffset)
         reload()
-        return .init(offset: Self.listOffset, header: header, is64Bit: true)
+        return .init(offset: Self.listOffset, header: header, is64Bit: is64Bit)
     }
 
     func writeRelativeMethodsWithInvalidMiddle() -> ObjCMethodList {

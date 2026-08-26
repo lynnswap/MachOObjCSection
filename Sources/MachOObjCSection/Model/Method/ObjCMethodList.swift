@@ -384,16 +384,36 @@ extension ObjCMethodList {
         ) else {
             return .failure(.invalidRelativeDisplacement)
         }
-        guard let nameAddress = fileHandle.readLayout(
-            offset: namePointerOffset,
-            as: UInt64.self
-        ) else {
-            return .failure(
-                .unreadableFileRange(
-                    offset: namePointerOffset,
-                    byteCount: MemoryLayout<UInt64>.size
+        let nameAddress: UInt64
+        let namePointerByteCount: Int
+        if machO.is64Bit {
+            namePointerByteCount = MemoryLayout<UInt64>.size
+            guard let address = fileHandle.readLayout(
+                offset: namePointerOffset,
+                as: UInt64.self
+            ) else {
+                return .failure(
+                    .unreadableFileRange(
+                        offset: namePointerOffset,
+                        byteCount: namePointerByteCount
+                    )
                 )
-            )
+            }
+            nameAddress = address
+        } else {
+            namePointerByteCount = MemoryLayout<UInt32>.size
+            guard let address = fileHandle.readLayout(
+                offset: namePointerOffset,
+                as: UInt32.self
+            ) else {
+                return .failure(
+                    .unreadableFileRange(
+                        offset: namePointerOffset,
+                        byteCount: namePointerByteCount
+                    )
+                )
+            }
+            nameAddress = UInt64(address)
         }
         guard let types = resolvedOffset(
             base: fileOffset,
