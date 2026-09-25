@@ -183,7 +183,9 @@ extension MachOFile {
     /// Otherwise (non-cache Mach-O):
     /// - resolve against the file directly
     ///
-    /// If it cannot be resolved, we still return a `ResolvedValue` that contains:
+    /// Self-image chained binds are resolved through their symbol table definition.
+    /// Binds to other images or missing definitions have no file-backed value.
+    /// For pointers without a chained fixup, return a `ResolvedValue` that contains:
     /// - the raw input value (unrebased)
     /// - file offset resolved from that raw value
     ///
@@ -210,6 +212,19 @@ extension MachOFile {
             )
         }
 
+        if let (binding, addend) = resolveBind(at: offset) {
+            guard binding.info.libraryOrdinal == 0,
+                  let name = dyldChainedFixups?.symbolName(for: binding.info.nameOffset),
+                  let symbolAddress = selfBindAddress(named: name),
+                  let base = UInt(exactly: symbolAddress),
+                  let importedAddress = addingSignedDisplacement(binding.info.addend, to: base),
+                  let address = addingSignedDisplacement(Int64(bitPattern: addend), to: importedAddress),
+                  let fileOffset = fileOffset(of: UInt64(address)) else {
+                return nil
+            }
+            return .init(address: UInt64(address), offset: fileOffset)
+        }
+
         if let resolved = resolveOptionalRebase(
             at: offset
         ) {
@@ -222,6 +237,10 @@ extension MachOFile {
             )
         }
 
+        // An unreadable chained bind/rebase is still encoded fixup data, not an address.
+        if chainedFixupPointer(at: offset) != nil {
+            return nil
+        }
         guard let fallbackFileOffset = fileOffset(of: unresolvedValue.value) else {
             return nil
         }
@@ -229,6 +248,43 @@ extension MachOFile {
             address: unresolvedValue.value,
             offset: fallbackFileOffset
         )
+    }
+
+    private func selfBindAddress(named name: String) -> UInt64? {
+        guard let symtab = loadCommands.info(of: LoadCommand.symtab) else { return nil }
+        let expectedName = Data(name.utf8) + Data([0])
+        let stride = is64Bit ? MemoryLayout<nlist_64>.size : MemoryLayout<nlist>.size
+        for index in 0..<UInt64(symtab.nsyms) {
+            let entryOffset = UInt64(symtab.symoff) + index * UInt64(stride)
+            guard let (file, offset) = fileHandleAndOffset(forOffset: entryOffset) else { return nil }
+            let stringOffset: UInt32
+            let type: UInt8
+            let address: UInt64
+            if is64Bit {
+                guard let symbol = file.readLayout(offset: offset, as: nlist_64.self) else { return nil }
+                stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
+                type = symbol.n_type
+                address = isSwapped ? symbol.n_value.byteSwapped : symbol.n_value
+            } else {
+                guard let symbol = file.readLayout(offset: offset, as: nlist.self) else { return nil }
+                stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
+                type = symbol.n_type
+                address = UInt64(isSwapped ? symbol.n_value.byteSwapped : symbol.n_value)
+            }
+            guard type & UInt8(N_STAB | N_TYPE) == UInt8(N_SECT),
+                  stringOffset < symtab.strsize,
+                  expectedName.count <= Int(symtab.strsize - stringOffset),
+                  let (strings, nameOffset) = fileHandleAndOffset(
+                    forOffset: UInt64(symtab.stroff) + UInt64(stringOffset)
+                  ),
+                  let start = Int(exactly: nameOffset),
+                  start <= strings.size,
+                  expectedName.count <= strings.size - start,
+                  let candidate = try? strings.readData(offset: start, length: expectedName.count),
+                  candidate == expectedName else { continue }
+            return address
+        }
+        return nil
     }
 }
 
