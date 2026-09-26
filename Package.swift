@@ -92,7 +92,7 @@ let package = Package(
             ),
             remote: .package(
                 url: "https://github.com/lynnswap/MachOKit.git",
-                revision: "89ac746b2fe3023760f882373f7f707da1e435e0"
+                revision: "5a9ca890f5deede8808a4512b92a69ba7ab6559a"
             )
         ),
         .package(

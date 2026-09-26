@@ -219,7 +219,7 @@ extension MachOFile {
                   let base = UInt(exactly: symbolAddress),
                   let importedAddress = addingSignedDisplacement(binding.info.addend, to: base),
                   let address = addingSignedDisplacement(Int64(bitPattern: addend), to: importedAddress),
-                  let fileOffset = fileOffset(of: UInt64(address)) else {
+                  let fileOffset = selfBindFileOffset(for: UInt64(address)) else {
                 return nil
             }
             return .init(address: UInt64(address), offset: fileOffset)
@@ -250,42 +250,67 @@ extension MachOFile {
         )
     }
 
+    private func selfBindFileOffset(for address: UInt64) -> UInt64? {
+        // Symbol definitions are absolute addresses; fileOffset(of:) also accepts
+        // header-relative offsets and strips tags, which would hide invalid binds.
+        for segment in segments {
+            guard let base = UInt64(exactly: segment.virtualMemoryAddress),
+                  let vmSize = UInt64(exactly: segment.virtualMemorySize),
+                  let fileSize = UInt64(exactly: segment.fileSize),
+                  let fileOffset = UInt64(exactly: segment.fileOffset),
+                  address >= base else { continue }
+            let displacement = address - base
+            guard displacement < vmSize, displacement < fileSize else { continue }
+            let (offset, overflow) = fileOffset.addingReportingOverflow(displacement)
+            return overflow ? nil : offset
+        }
+        return nil
+    }
+
     private func selfBindAddress(named name: String) -> UInt64? {
-        guard let symtab = loadCommands.info(of: LoadCommand.symtab) else { return nil }
-        let expectedName = Data(name.utf8) + Data([0])
+        SelfBindSymbolCache.shared.symbols(for: self) {
+            readSelfBindSymbols()
+        }[name]
+    }
+
+    private func readSelfBindSymbols() -> [String: UInt64] {
+        guard let symtab = loadCommands.info(of: LoadCommand.symtab),
+              let (stringsFile, stringsOffset) = fileHandleAndOffset(forOffset: UInt64(symtab.stroff)),
+              let stringsStart = Int(exactly: stringsOffset),
+              stringsStart <= stringsFile.size,
+              Int(symtab.strsize) <= stringsFile.size - stringsStart,
+              let strings = try? stringsFile.readData(offset: stringsStart, length: Int(symtab.strsize)) else {
+            return [:]
+        }
+        var definitions: [String: UInt64] = [:]
         let stride = is64Bit ? MemoryLayout<nlist_64>.size : MemoryLayout<nlist>.size
         for index in 0..<UInt64(symtab.nsyms) {
             let entryOffset = UInt64(symtab.symoff) + index * UInt64(stride)
-            guard let (file, offset) = fileHandleAndOffset(forOffset: entryOffset) else { return nil }
+            guard let (file, offset) = fileHandleAndOffset(forOffset: entryOffset) else { break }
             let stringOffset: UInt32
             let type: UInt8
             let address: UInt64
             if is64Bit {
-                guard let symbol = file.readLayout(offset: offset, as: nlist_64.self) else { return nil }
+                guard let symbol = file.readLayout(offset: offset, as: nlist_64.self) else { break }
                 stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
                 type = symbol.n_type
                 address = isSwapped ? symbol.n_value.byteSwapped : symbol.n_value
             } else {
-                guard let symbol = file.readLayout(offset: offset, as: nlist.self) else { return nil }
+                guard let symbol = file.readLayout(offset: offset, as: nlist.self) else { break }
                 stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
                 type = symbol.n_type
                 address = UInt64(isSwapped ? symbol.n_value.byteSwapped : symbol.n_value)
             }
             guard type & UInt8(N_STAB | N_TYPE) == UInt8(N_SECT),
                   stringOffset < symtab.strsize,
-                  expectedName.count <= Int(symtab.strsize - stringOffset),
-                  let (strings, nameOffset) = fileHandleAndOffset(
-                    forOffset: UInt64(symtab.stroff) + UInt64(stringOffset)
-                  ),
-                  let start = Int(exactly: nameOffset),
-                  start <= strings.size,
-                  expectedName.count <= strings.size - start,
-                  let candidate = try? strings.readData(offset: start, length: expectedName.count),
-                  candidate == expectedName else { continue }
-            return address
+                  let end = strings[Int(stringOffset)...].firstIndex(of: 0),
+                  let name = String(bytes: strings[Int(stringOffset)..<end], encoding: .utf8),
+                  definitions[name] == nil else { continue }
+            definitions[name] = address
         }
-        return nil
+        return definitions
     }
+
 }
 
 // MARK: - Objective-C
@@ -380,5 +405,33 @@ extension MachOFile {
             return info.index
         }
         return nil
+    }
+}
+
+// Key by the MachOFile owner, including its slice, so indexes expire with the reader.
+private final class SelfBindSymbolCache: @unchecked Sendable {
+    static let shared = SelfBindSymbolCache()
+    private let lock = NSLock()
+    private final class Symbols {
+        let values: [String: UInt64]
+        init(_ values: [String: UInt64]) { self.values = values }
+    }
+#if canImport(ObjectiveC)
+    private let entries: NSMapTable<MachOFile, Symbols> = .weakToStrongObjects()
+#else
+    private var entries = WeakKeyStrongValueMap<MachOFile, Symbols>()
+#endif
+
+    func symbols(for owner: MachOFile, build: () -> [String: UInt64]) -> [String: UInt64] {
+        lock.lock()
+        let cached = entries.object(forKey: owner)
+        lock.unlock()
+        if let cached { return cached.values }
+
+        let symbols = Symbols(build())
+        lock.lock()
+        entries.setObject(symbols, forKey: owner)
+        lock.unlock()
+        return symbols.values
     }
 }

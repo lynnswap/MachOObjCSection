@@ -80,6 +80,25 @@ final class ObjCChainedBindTests: XCTestCase {
         }
     }
 
+    func testLowAbsoluteSymbolAddressIsNotAHeaderRelativeOffset() throws {
+        let fixture = try ChainedClassFixture(options: .init(symbolDisplacement: -0x1_0000_1000))
+        let roots = fixture.machO.objc.readRoots()
+        XCTAssertEqual(roots.classes64?.count, 0)
+        XCTAssertEqual(roots.tableDiagnostics.count, 1)
+        guard case .unresolvedFileRootPointer = roots.tableDiagnostics.first?.failure else {
+            return XCTFail("Expected an unresolved self-bind diagnostic")
+        }
+    }
+
+    func testSelfBindDefinitionsBelongToTheirImage() throws {
+        let first = try ChainedClassFixture()
+        let second = try ChainedClassFixture(options: .init(symbolDisplacement: 0x80))
+        for _ in 0..<2 {
+            XCTAssertEqual(first.machO.objc.readRoots().classes64?.first?.offset, 0x900)
+            XCTAssertEqual(second.machO.objc.readRoots().classes64?.first?.offset, 0x980)
+        }
+    }
+
     func testOutOfImageBindDoesNotWrapIntoTheHeader() throws {
         let fixture = try ChainedClassFixture(options: .init(symbolDisplacement: -0x1100, importAddend: -1))
         let roots = fixture.machO.objc.readRoots()
