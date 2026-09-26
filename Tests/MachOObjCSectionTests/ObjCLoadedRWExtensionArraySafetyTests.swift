@@ -8,6 +8,30 @@ import Darwin
 
 #if canImport(Darwin)
 final class ObjCLoadedRWExtensionArraySafetyTests: XCTestCase {
+    func testListingMemberTablesDoesNotDereferenceMemberStrings() throws {
+        let fixture = try LoadedRWExtensionFixture()
+        let methodOffset = fixture.pageSize
+        let propertyOffset = methodOffset + 0x100
+        let headerSize = MemoryLayout<EntrySizeListHeader>.size
+        fixture.store(EntrySizeListHeader(layout: .init(entsizeAndFlags: 24, count: 1)), at: methodOffset)
+        fixture.store(ObjCMethod.Pointer64(name: 1, types: 1, imp: 0), at: methodOffset + headerSize)
+        fixture.store(EntrySizeListHeader(layout: .init(entsizeAndFlags: 16, count: 1)), at: propertyOffset)
+        fixture.store(ObjCProperty.Property64(name: 1, attributes: 1), at: propertyOffset + headerSize)
+        let ext = fixture.extensionData(
+            methods: fixture.address64(at: methodOffset),
+            properties: fixture.address64(at: propertyOffset)
+        )
+
+        let methods = ext.readMethodLists(in: fixture.machO)
+        let properties = ext.readPropertyLists(in: fixture.machO)
+        XCTAssertEqual(methods.entries.map(\.list.header.count), [1])
+        XCTAssertEqual(properties.entries.map(\.list.header.count), [1])
+        XCTAssertTrue(methods.tableDiagnostics.isEmpty)
+        XCTAssertTrue(properties.tableDiagnostics.isEmpty)
+        XCTAssertEqual(ext.methodList(in: fixture.machO)?.lists(in: fixture.machO).count, 1)
+        XCTAssertEqual(ext.propertyList(in: fixture.machO)?.lists(in: fixture.machO).count, 1)
+    }
+
     func testAllFieldKindsUseCheckedSingleProjection() throws {
         let fixture = try LoadedRWExtensionFixture()
         let methodOffset = fixture.pageSize

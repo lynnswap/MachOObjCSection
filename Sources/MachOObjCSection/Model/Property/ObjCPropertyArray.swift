@@ -93,8 +93,13 @@ extension ObjCPropertyArray {
                     from: pointer,
                     in: machO,
                     validateList: { list in
-                        guard case .failure(let failure) = list.readProperties(
-                            in: machO
+                        guard !list.isListOfLists else { return .unsupportedListEncoding }
+                        // Listing validates the table bytes without following member strings.
+                        guard case .failure(let failure) = list.readImageTable(
+                            in: machO,
+                            expectedStride: list.expectedEntrySize(is64Bit: is64Bit),
+                            requiredAlignment: list.expectedEntryAlignment(is64Bit: is64Bit),
+                            as: UInt8.self
                         ) else { return nil }
                         return failure
                     },
