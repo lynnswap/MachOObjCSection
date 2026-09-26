@@ -254,15 +254,11 @@ extension MachOFile {
         // Symbol definitions are absolute addresses; fileOffset(of:) also accepts
         // header-relative offsets and strips tags, which would hide invalid binds.
         for segment in segments {
-            guard let base = UInt64(exactly: segment.virtualMemoryAddress),
-                  let vmSize = UInt64(exactly: segment.virtualMemorySize),
-                  let fileSize = UInt64(exactly: segment.fileSize),
-                  let fileOffset = UInt64(exactly: segment.fileOffset),
-                  address >= base else { continue }
-            let displacement = address - base
-            guard displacement < vmSize, displacement < fileSize else { continue }
-            let (offset, overflow) = fileOffset.addingReportingOverflow(displacement)
-            return overflow ? nil : offset
+            guard let addresses = segment.fileBackedVirtualMemoryRange,
+                  addresses.contains(address),
+                  segment.virtualMemoryRange?.contains(address) == true,
+                  let fileRange = segment.fileRange else { continue }
+            return fileRange.lowerBound + (address - addresses.lowerBound)
         }
         return nil
     }
@@ -310,7 +306,6 @@ extension MachOFile {
         }
         return definitions
     }
-
 }
 
 // MARK: - Objective-C

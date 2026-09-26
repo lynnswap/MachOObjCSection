@@ -1,5 +1,5 @@
 {
-  "originHash" : "8577769b827f9fbe13ffc63eb82fff84eb04f0c3ad13ee7f88d71a46cddb1e85",
+  "originHash" : "8658378efd52891ea05f45712dacb395d0c4475dcdb9ff26d9e0e37d8ea74a3c",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -24,7 +24,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOKit.git",
       "state" : {
-        "revision" : "5a9ca890f5deede8808a4512b92a69ba7ab6559a"
+        "revision" : "f6a4f85280733a0e77d33f11274e7a12052c7ce1"
       }
     },
     {
