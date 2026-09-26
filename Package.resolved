@@ -1,5 +1,5 @@
 {
-  "originHash" : "91bbaa92b0ecc0f3d6a1bd5834be1f3e384ea9c33e407e2d67a65f270d017de3",
+  "originHash" : "09a8e82e106ae2b507dd647fd5f5f92ebd3f0ce41e7562cd9316139735652714",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -15,17 +15,16 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/Mx-Iris/FrameworkToolbox",
       "state" : {
-        "revision" : "a78120d107c6396a9a15aaa579f960f364a4ac37",
-        "version" : "0.10.0"
+        "revision" : "3be067f4280e0764cd4b6cd3ed623698ac981114",
+        "version" : "0.9.0"
       }
     },
     {
       "identity" : "machokit",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/MxIris-Reverse-Engineering/MachOKit",
+      "location" : "https://github.com/lynnswap/MachOKit.git",
       "state" : {
-        "revision" : "fec9503cdf3d595ef8cf4abac1602e299a8c3be4",
-        "version" : "0.52.101"
+        "revision" : "8d451ca2e9d108f0a2024758b33b25e8faa2adbb"
       }
     },
     {
@@ -51,8 +50,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/onevcat/Rainbow",
       "state" : {
-        "revision" : "cdf146ae671b2624917648b61c908d1244b98ca1",
-        "version" : "4.2.1"
+        "revision" : "711ca908ca19d16e577d575c8d0a48151a16bb1b",
+        "version" : "4.2.2"
       }
     },
     {

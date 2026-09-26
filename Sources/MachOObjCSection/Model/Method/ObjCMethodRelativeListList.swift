@@ -16,51 +16,56 @@ public struct ObjCMethodRelativeListList: RelativeListListProtocol {
     public let header: Header
 }
 
+extension ObjCMethodRelativeListList: ObjCMemberRelativeListListProtocol {
+    public func lists(in machO: MachOImage) -> [(MachOImage, ObjCMethodList)] {
+        resolveMemberLists(in: machO).resolvedValues
+    }
+
+    public func lists(in machO: MachOFile) -> [(MachOFile, ObjCMethodList)] {
+        resolveMemberLists(in: machO).resolvedValues
+    }
+
+    internal func makeList(
+        offset: Int,
+        header: EntrySizeListHeader,
+        is64Bit: Bool
+    ) -> ObjCMethodList {
+        .init(offset: offset, header: header, is64Bit: is64Bit)
+    }
+
+    internal func expectedEntrySize(for list: ObjCMethodList) -> Int {
+        list.expectedEntrySize(is64Bit: list.is64Bit)
+    }
+
+    internal func expectedEntryAlignment(for list: ObjCMethodList) -> Int {
+        list.expectedEntryAlignment(is64Bit: list.is64Bit)
+    }
+}
+
 extension ObjCMethodRelativeListList {
     init(
         ptr: UnsafeRawPointer,
         offset: Int
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 
     public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
-
-#if canImport(MachO)
-        guard let cache: DyldCacheLoaded = .current else { return nil }
-        guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
-
-        let list = List(
-            ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr),
-            is64Bit: machO.is64Bit
-        )
-
-        return (machO, list)
-#else
-        return nil
-#endif
+        guard case let .resolved(source, list) = resolveMemberList(
+            in: machO,
+            for: entry
+        ) else { return nil }
+        return (source, list)
     }
 }
 
 extension ObjCMethodRelativeListList {
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
-
-        guard let location = machO.relativeListLocation(for: entry) else {
-            return nil
-        }
-
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
-        let list = List(
-            offset: numericCast(offset),
-            header: header,
-            is64Bit: location.image.is64Bit
-        )
-
-        return (location.image, list)
+        guard case let .resolved(source, list) = resolveMemberList(
+            in: machO,
+            for: entry
+        ) else { return nil }
+        return (source, list)
     }
 }

@@ -41,21 +41,35 @@ extension ObjCIvarProtocol {
 
 extension ObjCIvarProtocol {
     public func offset(in machO: MachOFile) -> UInt32? {
-        guard layout.offset > 0 else { return nil }
+        readOffset(in: machO).value
+    }
+
+    internal func readOffset(
+        in machO: MachOFile
+    ) -> ObjCMetadataFieldRead<UInt32> {
+        guard layout.offset > 0 else { return .absent }
 
         let unresolved = unresolvedValue(of: .offset)
-        guard let resolved = machO.resolveRebase(unresolved) else { return nil }
+        guard let resolved = machO.resolveRebase(unresolved) else {
+            return .failure(.unresolvedRebase)
+        }
 
         guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: resolved) else {
-            return nil
+            return .failure(.missingBackingData)
         }
 
-        return try! fileHandle.readData(
-            offset: numericCast(fileOffset),
-            length: MemoryLayout<UInt32>.size
-        ).withUnsafeBytes {
-            $0.load(as: UInt32.self)
+        guard let offset = fileHandle.readLayout(
+            offset: fileOffset,
+            as: UInt32.self
+        ) else {
+            return .failure(
+                .unreadableFileRange(
+                    offset: fileOffset,
+                    byteCount: MemoryLayout<UInt32>.size
+                )
+            )
         }
+        return .value(offset)
     }
 
     public func name(in machO: MachOFile) -> String? {
@@ -89,11 +103,24 @@ extension ObjCIvarProtocol {
 
 extension ObjCIvarProtocol {
     public func offset(in machO: MachOImage) -> UInt32? {
-        guard layout.offset > 0 else { return nil }
-        let ptr = UnsafeRawPointer(
-            bitPattern: UInt(layout.offset)
-        )
-        return ptr!.assumingMemoryBound(to: UInt32.self).pointee
+        readOffset(in: machO).value
+    }
+
+    internal func readOffset(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<UInt32> {
+        guard layout.offset > 0 else { return .absent }
+        guard let address = UInt(exactly: layout.offset),
+              let ptr = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(.missingBackingData)
+        }
+        let byteCount = MemoryLayout<UInt32>.size
+        guard isPointerSafelyReadable(ptr, length: byteCount) else {
+            return .failure(
+                .unreadableImageRange(address: address, byteCount: byteCount)
+            )
+        }
+        return .value(ptr.loadUnaligned(as: UInt32.self))
     }
 
     public func name(in machO: MachOImage) -> String {

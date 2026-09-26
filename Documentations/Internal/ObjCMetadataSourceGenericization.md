@@ -107,7 +107,7 @@ func objcResolvedIMPAddress(forRawValue rawValue: UInt64) -> UInt64?
 两个 conformance 各自归一化后再交给共享的 `address(forOffset:)`。返回 `nil` 表示这个字段
 不是有效的实现指针（值为 0，或镜像模式下低于镜像基址）。
 
-`Tests/ObjCMetadataSourceTests` 里有一条测试专门比对两种模式解析出的 IMP 地址是否相等 —— 
+`Tests/ObjCMetadataSourceTests` 里有一条测试专门比对两种模式解析出的 IMP 地址是否相等 ——
 如果哪一侧的归一化写错，别处的输出仍然会一致，只有这条会失败。
 
 手工验证：对 `AssetCatalogFoundation` 导出的 `// IMP: 0x10AE88` 与 `0x10AF14`，

@@ -26,6 +26,8 @@ public struct ObjCInfoOptions: Sendable {
     }
 
     /// Preserves the default behavior and expands referenced protocols recursively.
+    /// Expansion is cycle-safe and hard-capped at 64 reference edges; a cutoff
+    /// edge is represented by a shallow name-only leaf.
     public static let recursive = ObjCInfoOptions()
 
     /// Uses the protocol detail level needed for Objective-C header dumps.
@@ -41,13 +43,20 @@ public struct ObjCInfoOptions: Sendable {
 public struct ObjCProtocolInfoOptions: Sendable {
     /// Controls how far referenced protocols are followed.
     public enum Traversal: Sendable {
-        /// Expands referenced protocols recursively.
+        /// Expands referenced protocols recursively, up to 64 reference edges.
+        ///
+        /// A cycle or a reference beyond that hard ceiling is represented by a
+        /// shallow name-only leaf. Use the Diagnostics SPI to observe either cutoff;
+        /// the compatibility `info(...)` APIs intentionally discard diagnostics.
         case recursive
 
         /// Expands referenced protocols up to the specified number of reference edges.
         ///
         /// A depth of `0` does not include referenced protocols. A depth of `1`
-        /// includes only directly referenced protocols.
+        /// includes only directly referenced protocols. Values greater than `64`
+        /// still use the hard ceiling: the edge beyond 64 becomes a shallow name-only
+        /// leaf and produces a Diagnostics SPI recursion-limit diagnostic. Exhausting
+        /// a configured depth at or below 64 is intentional and produces no warning.
         case depth(Int)
     }
 
@@ -81,6 +90,8 @@ public struct ObjCProtocolInfoOptions: Sendable {
     }
 
     /// Preserves the default behavior and expands referenced protocols recursively.
+    /// Expansion is cycle-safe and hard-capped at 64 reference edges; a cutoff
+    /// edge is represented by a shallow name-only leaf.
     public static let recursive = ObjCProtocolInfoOptions()
 
     /// Includes direct protocol references as name-only protocol information.
@@ -106,6 +117,84 @@ extension ObjCProtocolInfoOptions {
             next.traversal = .depth(depth - 1)
             return next
         }
+    }
+}
+
+private extension ObjCProtocolTraversalContext {
+    mutating func methodInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCMethodList>,
+        in source: MachOFile,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassMethod: Bool
+    ) -> [ObjCMethodInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readMethods(in: source) },
+            transform: { $0.info(isClassMethod: isClassMethod) }
+        )
+    }
+
+    mutating func methodInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCMethodList>,
+        in source: MachOImage,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassMethod: Bool
+    ) -> [ObjCMethodInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readMethods(in: source) },
+            transform: { $0.info(isClassMethod: isClassMethod) }
+        )
+    }
+
+    mutating func propertyInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCPropertyList>,
+        in source: MachOFile,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassProperty: Bool
+    ) -> [ObjCPropertyInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readProperties(in: source) },
+            transform: { $0.info(isClassProperty: isClassProperty) }
+        )
+    }
+
+    mutating func propertyInfos(
+        from listRead: ObjCMetadataReferenceRead<ObjCPropertyList>,
+        in source: MachOImage,
+        subject: ObjCMetadataTableDiagnostic.MetadataSubject,
+        kind: ObjCMetadataTableDiagnostic.MemberKind,
+        isClassProperty: Bool
+    ) -> [ObjCPropertyInfo] {
+        ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: listRead,
+            in: source,
+            subject: subject,
+            kind: kind,
+            context: &self,
+            entryStride: { $0.expectedEntrySize(is64Bit: source.is64Bit) },
+            read: { $0.readProperties(in: source) },
+            transform: { $0.info(isClassProperty: isClassProperty) }
+        )
     }
 }
 
@@ -171,39 +260,108 @@ extension ObjCProtocolProtocol {
         in machO: MachOFile,
         options: ObjCProtocolInfoOptions = .recursive
     ) -> ObjCProtocolInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this protocol and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCProtocolInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCProtocolInfo> {
         let name = mangledName(in: machO)
+        let identity = traversalIdentity(in: machO)
+        var context = ObjCProtocolTraversalContext(
+            subject: .protocol(name: name),
+            rootProtocol: identity.map { ($0, name) }
+        )
+        if identity == nil {
+            context.recordInvalidRootIdentity(protocolOffset: offset)
+        }
+        let effectiveOptions = identity == nil
+            ? ObjCProtocolInfoOptions(
+                traversal: .depth(0),
+                referencedProtocolInfo: options.referencedProtocolInfo
+            )
+            : options
+        let value = _readInfo(
+            in: machO,
+            name: name,
+            options: effectiveOptions,
+            context: &context
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
 
-        let protocols = referencedProtocolInfos(in: machO, options: options)
+    private func _readInfo(
+        in machO: MachOFile,
+        name knownName: String? = nil,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCProtocolInfo? {
+        let name = knownName ?? mangledName(in: machO)
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.protocol(
+            name: name
+        )
 
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let protocols = referencedProtocolInfos(
+            in: machO,
+            options: options,
+            context: &context
+        )
 
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readFilePropertyList(field: ._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let properties = context.propertyInfos(
+            from: readFilePropertyList(field: .instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let classMethods = context.methodInfos(
+            from: readFileMethodList(field: .classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
-        let optionalClassMethodsList = optionalClassMethodList(in: machO)
-        let optionalClassMethods = optionalClassMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let methods = context.methodInfos(
+            from: readFileMethodList(field: .instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
-        let optionalMethodsList = optionalInstanceMethodList(in: machO)
-        let optionalMethods = optionalMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let optionalClassMethods = context.methodInfos(
+            from: readFileMethodList(field: .optionalClassMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalClassMethod,
+            isClassMethod: true
+        )
+
+        let optionalMethods = context.methodInfos(
+            from: readFileMethodList(field: .optionalInstanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalInstanceMethod,
+            isClassMethod: false
+        )
 
         // Note:
         // `Objective-C` protocol does not currently support optional properties
@@ -227,39 +385,108 @@ extension ObjCProtocolProtocol {
         in machO: MachOImage,
         options: ObjCProtocolInfoOptions = .recursive
     ) -> ObjCProtocolInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this protocol and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCProtocolInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCProtocolInfo> {
         let name = mangledName(in: machO)
+        let rootProtocol = traversalIdentity(in: machO).map { ($0, name) }
+        var context = ObjCProtocolTraversalContext(
+            subject: .protocol(name: name),
+            rootProtocol: rootProtocol
+        )
+        if rootProtocol == nil {
+            context.recordInvalidRootIdentity(protocolOffset: offset)
+        }
+        let effectiveOptions = rootProtocol == nil
+            ? ObjCProtocolInfoOptions(
+                traversal: .depth(0),
+                referencedProtocolInfo: options.referencedProtocolInfo
+            )
+            : options
+        let value = _readInfo(
+            in: machO,
+            name: name,
+            options: effectiveOptions,
+            context: &context
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
 
-        let protocols = referencedProtocolInfos(in: machO, options: options)
+    private func _readInfo(
+        in machO: MachOImage,
+        name knownName: String? = nil,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCProtocolInfo? {
+        let name = knownName ?? mangledName(in: machO)
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.protocol(
+            name: name
+        )
 
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let protocols = referencedProtocolInfos(
+            in: machO,
+            options: options,
+            context: &context
+        )
 
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readLoadedPropertyList(field: ._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let properties = context.propertyInfos(
+            from: readLoadedPropertyList(field: .instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let classMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
-        let optionalClassMethodsList = optionalClassMethodList(in: machO)
-        let optionalClassMethods = optionalClassMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let methods = context.methodInfos(
+            from: readLoadedMethodList(field: .instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
-        let optionalMethodsList = optionalInstanceMethodList(in: machO)
-        let optionalMethods = optionalMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let optionalClassMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .optionalClassMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalClassMethod,
+            isClassMethod: true
+        )
+
+        let optionalMethods = context.methodInfos(
+            from: readLoadedMethodList(field: .optionalInstanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .optionalInstanceMethod,
+            isClassMethod: false
+        )
 
         // Note:
         // `Objective-C` protocol does not currently support optional properties
@@ -280,42 +507,54 @@ extension ObjCProtocolProtocol {
     }
 }
 
+private func shallowProtocolInfo(name: String) -> ObjCProtocolInfo {
+    .init(
+        name: name,
+        protocols: [],
+        classProperties: [],
+        properties: [],
+        classMethods: [],
+        methods: [],
+        optionalClassProperties: [],
+        optionalProperties: [],
+        optionalClassMethods: [],
+        optionalMethods: []
+    )
+}
+
 extension ObjCProtocolProtocol {
     fileprivate func shallowInfo(in machO: MachOFile) -> ObjCProtocolInfo {
-        .init(
-            name: mangledName(in: machO),
-            protocols: [],
-            classProperties: [],
-            properties: [],
-            classMethods: [],
-            methods: [],
-            optionalClassProperties: [],
-            optionalProperties: [],
-            optionalClassMethods: [],
-            optionalMethods: []
-        )
+        shallowProtocolInfo(name: mangledName(in: machO))
     }
 
     fileprivate func shallowInfo(in machO: MachOImage) -> ObjCProtocolInfo {
-        .init(
-            name: mangledName(in: machO),
-            protocols: [],
-            classProperties: [],
-            properties: [],
-            classMethods: [],
-            methods: [],
-            optionalClassMethods: [],
-            optionalMethods: []
-        )
+        shallowProtocolInfo(name: mangledName(in: machO))
     }
 
     fileprivate func referenceInfo(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        identity: ObjCProtocolIdentity,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
+        let name = mangledName(in: machO)
+        switch context.decision(for: identity, name: name) {
+        case .shallowCycle, .shallowLimit:
+            return shallowInfo(in: machO)
+        case .descend:
+            break
+        }
         switch options.referencedProtocolInfo {
         case .full:
-            return info(in: machO, options: options)
+            context.enter(identity: identity, name: name)
+            let info = _readInfo(
+                in: machO,
+                name: name,
+                options: options,
+                context: &context
+            )
+            context.leave(identity: identity)
+            return info
         case .nameOnly:
             return shallowInfo(in: machO)
         }
@@ -323,11 +562,28 @@ extension ObjCProtocolProtocol {
 
     fileprivate func referenceInfo(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        identity: ObjCProtocolIdentity,
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> ObjCProtocolInfo? {
+        let name = mangledName(in: machO)
+        switch context.decision(for: identity, name: name) {
+        case .shallowCycle, .shallowLimit:
+            return shallowInfo(in: machO)
+        case .descend:
+            break
+        }
         switch options.referencedProtocolInfo {
         case .full:
-            return info(in: machO, options: options)
+            context.enter(identity: identity, name: name)
+            let info = _readInfo(
+                in: machO,
+                name: name,
+                options: options,
+                context: &context
+            )
+            context.leave(identity: identity)
+            return info
         case .nameOnly:
             return shallowInfo(in: machO)
         }
@@ -335,62 +591,232 @@ extension ObjCProtocolProtocol {
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions) ?? []
+        return protocolListResolution(in: machO)
+            .protocolInfos(options: nextOptions, context: &context)
     }
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolList(in: machO)?
-            .protocolInfos(in: machO, options: nextOptions) ?? []
+        return protocolListResolution(in: machO)
+            .protocolInfos(options: nextOptions, context: &context)
     }
 }
 
 extension ObjCProtocolListProtocol {
     fileprivate func referencedProtocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolInfos(in: machO, options: nextOptions)
+        return protocolInfos(in: machO, options: nextOptions, context: &context)
     }
 
     fileprivate func referencedProtocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
         guard let nextOptions = options.nextForReferencedProtocol() else {
             return []
         }
-        return protocolInfos(in: machO, options: nextOptions)
+        return protocolInfos(in: machO, options: nextOptions, context: &context)
     }
 
     fileprivate func protocolInfos(
         in machO: MachOFile,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        protocols(in: machO)?
-            .compactMap { $1.referenceInfo(in: $0, options: options) } ?? []
+        switch readProtocols(in: machO) {
+        case .failure(let failure):
+            context.record(tableFailure: failure, listOffset: offset)
+            return []
+        case .success(let success):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in success.entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(entryFailure: failure, listOffset: offset)
+                case .nameReference(let reference):
+                    context.record(
+                        entryFailure: .init(
+                            index: reference.index,
+                            reason: .missingBackingData
+                        ),
+                        listOffset: offset
+                    )
+                case .reference(let reference):
+                    if let info = reference.value.referenceInfo(
+                        in: reference.source,
+                        identity: reference.identity,
+                        options: options,
+                        context: &context
+                    ) {
+                        infos.append(info)
+                    }
+                }
+            }
+            return infos
+        }
     }
 
     fileprivate func protocolInfos(
         in machO: MachOImage,
-        options: ObjCProtocolInfoOptions
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
     ) -> [ObjCProtocolInfo] {
-        protocols(in: machO)?
-            .compactMap { $1.referenceInfo(in: $0, options: options) } ?? []
+        let runtimeResolver: ObjCProtocolRuntimeResolver?
+        switch options.referencedProtocolInfo {
+        case .full:
+            runtimeResolver = nil
+        case .nameOnly:
+            runtimeResolver = .runtime
+        }
+        switch readProtocols(
+            in: machO,
+            runtimeResolver: runtimeResolver
+        ) {
+        case .failure(let failure):
+            context.record(tableFailure: failure, listOffset: offset)
+            return []
+        case .success(let success):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in success.entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(entryFailure: failure, listOffset: offset)
+                case .nameReference(let reference):
+                    guard case .nameOnly = options.referencedProtocolInfo else {
+                        context.record(
+                            entryFailure: .init(
+                                index: reference.index,
+                                reason: .missingBackingData
+                            ),
+                            listOffset: offset
+                        )
+                        continue
+                    }
+                    _ = context.decision(
+                        for: reference.identity,
+                        name: reference.name
+                    )
+                    infos.append(shallowProtocolInfo(name: reference.name))
+                case .reference(let reference):
+                    if let info = reference.value.referenceInfo(
+                        in: reference.source,
+                        identity: reference.identity,
+                        options: options,
+                        context: &context
+                    ) {
+                        infos.append(info)
+                    }
+                }
+            }
+            return infos
+        }
+    }
+}
+
+extension ObjCRelativeListResolution where
+    Source == MachOFile,
+    List: ObjCProtocolListProtocol,
+    Failure == ObjCProtocolListResolutionFailure
+{
+    fileprivate func referencedProtocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        guard let nextOptions = options.nextForReferencedProtocol() else { return [] }
+        return protocolInfos(options: nextOptions, context: &context)
+    }
+
+    fileprivate func protocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        switch self {
+        case .absent:
+            return []
+        case .failure(let failure):
+            context.record(resolutionFailure: failure)
+            return []
+        case .entries(let entries):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(resolutionFailure: failure)
+                case let .resolved(source, list):
+                    infos.append(
+                        contentsOf: list.protocolInfos(
+                            in: source,
+                            options: options,
+                            context: &context
+                        )
+                    )
+                }
+            }
+            return infos
+        }
+    }
+}
+
+extension ObjCRelativeListResolution where
+    Source == MachOImage,
+    List: ObjCProtocolListProtocol,
+    Failure == ObjCProtocolListResolutionFailure
+{
+    fileprivate func referencedProtocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        guard let nextOptions = options.nextForReferencedProtocol() else { return [] }
+        return protocolInfos(options: nextOptions, context: &context)
+    }
+
+    fileprivate func protocolInfos(
+        options: ObjCProtocolInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> [ObjCProtocolInfo] {
+        switch self {
+        case .absent:
+            return []
+        case .failure(let failure):
+            context.record(resolutionFailure: failure)
+            return []
+        case .entries(let entries):
+            var infos: [ObjCProtocolInfo] = []
+            for entry in entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(resolutionFailure: failure)
+                case let .resolved(source, list):
+                    infos.append(
+                        contentsOf: list.protocolInfos(
+                            in: source,
+                            options: options,
+                            context: &context
+                        )
+                    )
+                }
+            }
+            return infos
+        }
     }
 }
 
@@ -400,68 +826,250 @@ extension ObjCClassProtocol {
         in machO: MachOFile,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCClassInfo? {
-        guard let data = classROData(in: machO),
-              let (targetMachO, meta) = metaClass(in: machO),
-              let metaData = meta.classROData(in: targetMachO),
-              let name = data.name(in: machO) else {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this class and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCClassInfo> {
+        var fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
+        let data: ClassROData
+        switch readDirectClassROData(in: machO) {
+        case .absent:
+            return .init(value: nil, diagnostics: [])
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: nil,
+                    role: .instance,
+                    classObjectOffset: offset,
+                    failure: failure
+                )
+            )
+            return .init(
+                value: nil,
+                diagnostics: [],
+                fieldDiagnostics: fieldDiagnostics
+            )
+        case .value(let value):
+            data = value
+        }
+        guard let name = data.name(in: machO) else {
+            return .init(value: nil, diagnostics: [])
+        }
+
+        var context = ObjCProtocolTraversalContext(subject: .class(name: name))
+        let value = _readInfo(
+            in: machO,
+            data: data,
+            name: name,
+            options: options,
+            context: &context,
+            fieldDiagnostics: &fieldDiagnostics
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            memberListDiagnostics: context.memberListDiagnostics,
+            fieldDiagnostics: fieldDiagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
+
+    private func _readInfo(
+        in machO: MachOFile,
+        data: ClassROData,
+        name: String,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext,
+        fieldDiagnostics: inout [ObjCMetadataFieldDiagnostic]
+    ) -> ObjCClassInfo? {
+        guard let (targetMachO, meta) = metaClass(in: machO) else { return nil }
+
+        let metaData: ClassROData?
+        switch meta.readDirectClassROData(in: targetMachO) {
+        case .absent:
             return nil
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: name,
+                    role: .metaclass,
+                    classObjectOffset: meta.offset,
+                    failure: failure
+                )
+            )
+            metaData = nil
+        case .value(let value):
+            metaData = value
         }
         let imagePath = machO.imagePath
-
-        // Cache `objcImageIndex` lookups so a class with multiple relative
-        // list lists (protocol + property + method) only pays the dyld cache
-        // header walk once. Classes with no relative list list never enter
-        // these closures, so the lookup is skipped entirely.
-        var _imageIndex: Int??
-        var _targetMachOImageIndex: Int??
-        func imageIndex() -> Int? {
-            if let v = _imageIndex { return v }
-            let v = machO.objcImageIndex
-            _imageIndex = .some(v)
-            return v
-        }
-        func targetMachOImageIndex() -> Int? {
-            if let v = _targetMachOImageIndex { return v }
-            let v = targetMachO.objcImageIndex
-            _targetMachOImageIndex = .some(v)
-            return v
-        }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.class(
+            name: name
+        )
+        let subject = ObjCMetadataFieldDiagnostic.Subject.namedClass(
+            name: name,
+            objectOffset: offset
+        )
 
         let protocols = data
-            .resolvedProtocolList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in
-                list.referencedProtocolInfos(
-                    in: m,
-                    options: options.protocolInfoOptions
-                )
-            } ?? []
+            .protocolListResolutions(in: machO)
+            .referencedProtocolInfos(
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
-        let ivarList = data.ivarList(in: machO)
-        let ivars = ivarList?
-            .ivars(in: machO)?
-            .compactMap { $0.info(in: machO) } ?? []
+        var ivars: [ObjCIvarInfo] = []
+        let ivarEntries = ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: data.readFileIvarList(in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .ivar,
+            context: &context,
+            entryStride: { $0.entrySize },
+            read: { $0.readIvars(in: machO) },
+            transform: { Optional($0) }
+        )
+        ivars.reserveCapacity(ivarEntries.count)
+        for (index, ivar) in ivarEntries.enumerated() {
+                guard let ivarName = ivar.name(in: machO),
+                      let type = ivar.type(in: machO) else {
+                    continue
+                }
+                switch ivar.readOffset(in: machO) {
+                case .absent:
+                    continue
+                case .failure(let failure):
+                    fieldDiagnostics.append(
+                        .ivarOffset(
+                            .init(
+                                subject: subject,
+                                index: index,
+                                name: ivarName,
+                                failure: failure
+                            )
+                        )
+                    )
+                case .value(let value):
+                    ivars.append(
+                        .init(
+                            name: ivarName,
+                            typeEncoding: type,
+                            offset: numericCast(value)
+                        )
+                    )
+                }
+        }
 
         // Instance
-        let properties = data
-            .resolvedPropertyList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in list.properties(in: m) }?
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties: [ObjCPropertyInfo]
+        if data.layout.baseProperties & 1 == 1 {
+            properties = data
+                .propertyListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceProperty,
+                    context: &context,
+                    tableKind: .instanceProperty,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readProperties(in: source) },
+                    transform: { $0.info(isClassProperty: false) }
+                )
+        } else {
+            properties = context.propertyInfos(
+                from: data.readFilePropertyList(in: machO),
+                in: machO,
+                subject: tableSubject,
+                kind: .instanceProperty,
+                isClassProperty: false
+            )
+        }
 
-        let methods = data
-            .resolvedMethodList(in: machO, imageIndex: imageIndex())
-            .flatMap { (m, list) in list.methods(in: m) }?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods: [ObjCMethodInfo]
+        if data.layout.baseMethods & 1 == 1 {
+            methods = data
+                .methodListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceMethod,
+                    context: &context,
+                    tableKind: .instanceMethod,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readMethods(in: source) },
+                    transform: { $0.info(isClassMethod: false) }
+                )
+        } else {
+            methods = context.methodInfos(
+                from: data.readFileMethodList(in: machO),
+                in: machO,
+                subject: tableSubject,
+                kind: .instanceMethod,
+                isClassMethod: false
+            )
+        }
 
         // Meta
-        let classProperties = metaData
-            .resolvedPropertyList(in: targetMachO, imageIndex: targetMachOImageIndex())
-            .map { (m, list) in list.properties(in: m) }?
-            .compactMap { $0.info(isClassProperty: true) } ?? []
-
-        let classMethods = metaData
-            .resolvedMethodList(in: targetMachO, imageIndex: targetMachOImageIndex())
-            .flatMap { (m, list) in list.methods(in: m) }?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classProperties: [ObjCPropertyInfo]
+        let classMethods: [ObjCMethodInfo]
+        if let metaData {
+            if metaData.layout.baseProperties & 1 == 1 {
+                classProperties = metaData
+                    .propertyListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classProperty,
+                        context: &context,
+                        tableKind: .classProperty,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readProperties(in: source) },
+                        transform: { $0.info(isClassProperty: true) }
+                    )
+            } else {
+                classProperties = context.propertyInfos(
+                    from: metaData.readFilePropertyList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
+                    kind: .classProperty,
+                    isClassProperty: true
+                )
+            }
+            if metaData.layout.baseMethods & 1 == 1 {
+                classMethods = metaData
+                    .methodListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classMethod,
+                        context: &context,
+                        tableKind: .classMethod,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readMethods(in: source) },
+                        transform: { $0.info(isClassMethod: true) }
+                    )
+            } else {
+                classMethods = context.methodInfos(
+                    from: metaData.readFileMethodList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
+                    kind: .classMethod,
+                    isClassMethod: true
+                )
+            }
+        } else {
+            classProperties = []
+            classMethods = []
+        }
 
         let superClassName = superClassName(in: machO)
 
@@ -481,111 +1089,300 @@ extension ObjCClassProtocol {
     }
 
     public func name(in machO: MachOImage) -> String? {
-        data(in: machO)?.data.name(in: machO)
+        readClassRODataForInfo(in: machO).value?.name(in: machO)
     }
 
-    private func data(in machO: MachOImage) -> (machO: MachOImage, data: ClassROData, metaData: ClassROData)? {
-        guard let (targetMachO, meta) = metaClass(in: machO) else {
-            return nil
-        }
-        let data: ClassROData
-        let metaData: ClassROData
+    private func readClassRODataForInfo(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ClassROData> {
+        let direct = readDirectClassROData(in: machO)
+        guard case .absent = direct else { return direct }
+        guard let rw = classRWData(in: machO) else { return .absent }
 
-        if let _data = classROData(in: machO) {
-            data = _data
-        } else if let rw = classRWData(in: machO) {
-            if let _data = rw.classROData(in: machO) {
-                data = _data
-            } else if let ext = rw.ext(in: machO),
-                      let _data = ext.classROData(in: machO) {
-                data = _data
-            } else {
-                return nil
-            }
-        } else {
-            return nil
-        }
-
-        if let _data = meta.classROData(in: targetMachO) {
-            metaData = _data
-        } else if let rw = meta.classRWData(in: targetMachO) {
-            if let _data = rw.classROData(in: targetMachO) {
-                metaData = _data
-            } else if let ext = rw.ext(in: targetMachO),
-                      let _data = ext.classROData(in: targetMachO) {
-                metaData = _data
-            } else {
-                return nil
-            }
-        } else {
-            return nil
-        }
-        return (targetMachO, data, metaData)
+        let readOnlyData = rw.readClassROData(in: machO)
+        guard case .absent = readOnlyData else { return readOnlyData }
+        guard let ext = rw.ext(in: machO) else { return .absent }
+        return ext.readClassROData(in: machO)
     }
 
     public func info(
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCClassInfo? {
-        guard let (targetMachO, data, metaData) = data(in: machO) else { return nil }
+        readInfo(in: machO, options: options).value
+    }
 
+    /// Decodes this class and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCClassInfo> {
+        var fieldDiagnostics: [ObjCMetadataFieldDiagnostic] = []
+        let data: ClassROData
+        switch readClassRODataForInfo(in: machO) {
+        case .absent:
+            return .init(value: nil, diagnostics: [])
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: nil,
+                    role: .instance,
+                    classObjectOffset: offset,
+                    failure: failure
+                )
+            )
+            return .init(
+                value: nil,
+                diagnostics: [],
+                fieldDiagnostics: fieldDiagnostics
+            )
+        case .value(let value):
+            data = value
+        }
         guard let name = data.name(in: machO) else {
-            return nil
+            return .init(value: nil, diagnostics: [])
         }
 
-        // See `info(in: MachOFile)` for why these are cached locally.
-        var _imageIndex: Int??
-        var _targetMachOImageIndex: Int??
-        func imageIndex() -> Int? {
-            if let v = _imageIndex { return v }
-            let v = machO.objcImageIndex
-            _imageIndex = .some(v)
-            return v
+        var context = ObjCProtocolTraversalContext(subject: .class(name: name))
+        let value = _readInfo(
+            in: machO,
+            data: data,
+            name: name,
+            options: options,
+            context: &context,
+            fieldDiagnostics: &fieldDiagnostics
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            memberListDiagnostics: context.memberListDiagnostics,
+            fieldDiagnostics: fieldDiagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
+
+    private func _readInfo(
+        in machO: MachOImage,
+        data: ClassROData,
+        name: String,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext,
+        fieldDiagnostics: inout [ObjCMetadataFieldDiagnostic]
+    ) -> ObjCClassInfo? {
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.class(
+            name: name
+        )
+        let targetMachO: MachOImage
+        let meta: Self
+        switch readLoadedRelatedClass(field: .isa, in: machO) {
+        case .absent:
+            return nil
+        case let .failure(provenance, reason):
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: provenance,
+                reason: reason,
+                subject: tableSubject,
+                role: .metaclass,
+                context: &context
+            )
+            return nil
+        case .value(let value):
+            (targetMachO, meta) = value
         }
-        func targetMachOImageIndex() -> Int? {
-            if let v = _targetMachOImageIndex { return v }
-            let v = targetMachO.objcImageIndex
-            _targetMachOImageIndex = .some(v)
-            return v
+
+        let metaData: ClassROData?
+        switch meta.readClassRODataForInfo(in: targetMachO) {
+        case .absent:
+            return nil
+        case .failure(let failure):
+            fieldDiagnostics.append(
+                classRODataDiagnostic(
+                    name: name,
+                    role: .metaclass,
+                    classObjectOffset: meta.offset,
+                    failure: failure
+                )
+            )
+            metaData = nil
+        case .value(let value):
+            metaData = value
         }
+        let subject = ObjCMetadataFieldDiagnostic.Subject.namedClass(
+            name: name,
+            objectOffset: offset
+        )
 
         let protocols = data
-            .resolvedProtocolList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in
-                list.referencedProtocolInfos(
-                    in: m,
-                    options: options.protocolInfoOptions
-                )
-            } ?? []
+            .protocolListResolutions(in: machO)
+            .referencedProtocolInfos(
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
-        let ivarList = data.ivarList(in: machO)
-        let ivars = ivarList?
-            .ivars(in: machO)?
-            .compactMap { $0.info(in: machO) } ?? []
+        var ivars: [ObjCIvarInfo] = []
+        let ivarEntries = ObjCMetadataTableDiagnosticRecorder.memberValues(
+            from: data.readLoadedIvarList(in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .ivar,
+            context: &context,
+            entryStride: { $0.entrySize },
+            read: { $0.readIvars(in: machO) },
+            transform: { Optional($0) }
+        )
+        ivars.reserveCapacity(ivarEntries.count)
+        for (index, ivar) in ivarEntries.enumerated() {
+                let ivarName = ivar.name(in: machO)
+                guard let type = ivar.type(in: machO) else { continue }
+                switch ivar.readOffset(in: machO) {
+                case .absent:
+                    continue
+                case .failure(let failure):
+                    fieldDiagnostics.append(
+                        .ivarOffset(
+                            .init(
+                                subject: subject,
+                                index: index,
+                                name: ivarName,
+                                failure: failure
+                            )
+                        )
+                    )
+                case .value(let value):
+                    ivars.append(
+                        .init(
+                            name: ivarName,
+                            typeEncoding: type,
+                            offset: numericCast(value)
+                        )
+                    )
+                }
+        }
 
         // Instance
-        let properties = data
-            .resolvedPropertyList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in list.properties(in: m) }?
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties: [ObjCPropertyInfo]
+        if data.layout.baseProperties & 1 == 1 {
+            properties = data
+                .propertyListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceProperty,
+                    context: &context,
+                    tableKind: .instanceProperty,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readProperties(in: source) },
+                    transform: { $0.info(isClassProperty: false) }
+                )
+        } else {
+            properties = context.propertyInfos(
+                from: data.readLoadedPropertyList(in: machO),
+                in: machO,
+                subject: tableSubject,
+                kind: .instanceProperty,
+                isClassProperty: false
+            )
+        }
 
-        let methods = data
-            .resolvedMethodList(in: machO, imageIndex: imageIndex())
-            .map { (m, list) in list.methods(in: m) }?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods: [ObjCMethodInfo]
+        if data.layout.baseMethods & 1 == 1 {
+            methods = data
+                .methodListResolutions(in: machO)
+                .memberValues(
+                    className: name,
+                    kind: .instanceMethod,
+                    context: &context,
+                    tableKind: .instanceMethod,
+                    entryStride: { source, list in
+                        list.expectedEntrySize(is64Bit: source.is64Bit)
+                    },
+                    read: { source, list in list.readMethods(in: source) },
+                    transform: { $0.info(isClassMethod: false) }
+                )
+        } else {
+            methods = context.methodInfos(
+                from: data.readLoadedMethodList(in: machO),
+                in: machO,
+                subject: tableSubject,
+                kind: .instanceMethod,
+                isClassMethod: false
+            )
+        }
 
         // Meta
-        let classProperties = metaData
-            .resolvedPropertyList(in: targetMachO, imageIndex: targetMachOImageIndex())
-            .map { (m, list) in list.properties(in: m) }?
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties: [ObjCPropertyInfo]
+        let classMethods: [ObjCMethodInfo]
+        if let metaData {
+            if metaData.layout.baseProperties & 1 == 1 {
+                classProperties = metaData
+                    .propertyListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classProperty,
+                        context: &context,
+                        tableKind: .classProperty,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readProperties(in: source) },
+                        transform: { $0.info(isClassProperty: true) }
+                    )
+            } else {
+                classProperties = context.propertyInfos(
+                    from: metaData.readLoadedPropertyList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
+                    kind: .classProperty,
+                    isClassProperty: true
+                )
+            }
+            if metaData.layout.baseMethods & 1 == 1 {
+                classMethods = metaData
+                    .methodListResolutions(in: targetMachO)
+                    .memberValues(
+                        className: name,
+                        kind: .classMethod,
+                        context: &context,
+                        tableKind: .classMethod,
+                        entryStride: { source, list in
+                            list.expectedEntrySize(is64Bit: source.is64Bit)
+                        },
+                        read: { source, list in list.readMethods(in: source) },
+                        transform: { $0.info(isClassMethod: true) }
+                    )
+            } else {
+                classMethods = context.methodInfos(
+                    from: metaData.readLoadedMethodList(in: targetMachO),
+                    in: targetMachO,
+                    subject: tableSubject,
+                    kind: .classMethod,
+                    isClassMethod: true
+                )
+            }
+        } else {
+            classProperties = []
+            classMethods = []
+        }
 
-        let classMethods = metaData
-            .resolvedMethodList(in: targetMachO, imageIndex: targetMachOImageIndex())
-            .map { (m, list) in list.methods(in: m) }?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
-
-        let superClassName = superClassName(in: machO)
+        let superClassName: String?
+        switch readLoadedRelatedClass(field: .superclass, in: machO) {
+        case .absent:
+            superClassName = nil
+        case let .failure(provenance, reason):
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: provenance,
+                reason: reason,
+                subject: tableSubject,
+                role: .superclass,
+                context: &context
+            )
+            superClassName = nil
+        case .value(let value):
+            superClassName = loadedRelatedClassName(value)
+        }
 
         return .init(
             name: name,
@@ -601,6 +1398,48 @@ extension ObjCClassProtocol {
             methods: methods
         )
     }
+
+    private func classRODataDiagnostic(
+        name: String?,
+        role: ObjCMetadataFieldDiagnostic.ClassRole,
+        classObjectOffset: Int,
+        failure: ObjCMetadataFieldDiagnostic.Failure
+    ) -> ObjCMetadataFieldDiagnostic {
+        let subject: ObjCMetadataFieldDiagnostic.Subject
+        if let name {
+            subject = .namedClass(name: name, objectOffset: offset)
+        } else {
+            subject = .classObject(offset: offset)
+        }
+        return .classROData(
+            .init(
+                subject: subject,
+                role: role,
+                classObjectOffset: classObjectOffset,
+                failure: failure
+            )
+        )
+    }
+
+    private func loadedRelatedClassName(
+        _ relation: (MachOImage, Self)
+    ) -> String? {
+        let (machO, cls) = relation
+        var data: ClassROData?
+        if let direct = cls.classROData(in: machO) {
+            data = direct
+        }
+        if let rw = cls.classRWData(in: machO) {
+            if let readOnly = rw.classROData(in: machO) {
+                data = readOnly
+            }
+            if let ext = rw.ext(in: machO),
+               let readOnly = ext.classROData(in: machO) {
+                data = readOnly
+            }
+        }
+        return data?.name(in: machO)
+    }
 }
 
 // MARK: Category
@@ -609,38 +1448,130 @@ extension ObjCCategoryProtocol {
         in machO: MachOImage,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCCategoryInfo? {
-        guard let name = name(in: machO),
-              let className = className(in: machO) else {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this category and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOImage,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCCategoryInfo> {
+        let categoryName = name(in: machO)
+        let targetClassName: String?
+        let relationshipFailure: (
+            provenance: ObjCMetadataTableDiagnostic.Provenance,
+            reason: ObjCMetadataTableDiagnostic.Failure
+        )?
+        if isCatlist2 {
+            switch readLoadedStubClass(in: machO) {
+            case .absent, .value:
+                relationshipFailure = nil
+            case let .failure(provenance, reason):
+                relationshipFailure = (provenance, reason)
+            }
+            targetClassName = categorySymbolClassName(in: machO)
+        } else {
+            switch readLoadedClass(in: machO) {
+            case .absent:
+                targetClassName = categorySymbolClassName(in: machO)
+                relationshipFailure = nil
+            case let .failure(provenance, reason):
+                targetClassName = categorySymbolClassName(in: machO)
+                relationshipFailure = (provenance, reason)
+            case .value(let value):
+                targetClassName = loadedCategoryClassName(value)
+                relationshipFailure = nil
+            }
+        }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: targetClassName ?? "<unknown>",
+            name: categoryName ?? "<unknown>"
+        )
+        var context = ObjCProtocolTraversalContext(
+            subject: .category(
+                className: targetClassName ?? "<unknown>",
+                name: categoryName ?? "<unknown>"
+            )
+        )
+        if let relationshipFailure {
+            ObjCMetadataTableDiagnosticRecorder.recordLoadedRelationshipFailure(
+                provenance: relationshipFailure.provenance,
+                reason: relationshipFailure.reason,
+                subject: tableSubject,
+                role: isCatlist2 ? .categoryStubClass : .categoryClass,
+                context: &context
+            )
+        }
+        let value = _readInfo(
+            in: machO,
+            name: categoryName,
+            className: targetClassName,
+            options: options,
+            context: &context
+        )
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
+
+    private func _readInfo(
+        in machO: MachOImage,
+        name: String?,
+        className: String?,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCCategoryInfo? {
+        guard let name, let className else {
             return nil
         }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: className,
+            name: name
+        )
 
-        let protocols = protocolList(in: machO)?
+        let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
-                in: machO,
-                options: options.protocolInfoOptions
-            ) ?? []
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
         // Instance
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readLoadedPropertyList(at: layout.instanceProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readLoadedMethodList(at: layout.instanceMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
         // Meta
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readLoadedPropertyList(at: layout._classProperties, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readLoadedMethodList(at: layout.classMethods, in: machO),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
         return .init(
             name: name,
@@ -657,38 +1588,98 @@ extension ObjCCategoryProtocol {
         in machO: MachOFile,
         options: ObjCInfoOptions = .recursive
     ) -> ObjCCategoryInfo? {
+        readInfo(in: machO, options: options).value
+    }
+
+    /// Decodes this category and returns recoverable protocol-list/traversal diagnostics.
+    /// Each call owns an independent traversal path and diagnostic sequence.
+    @_spi(Diagnostics)
+    public func readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions = .recursive
+    ) -> ObjCMetadataReadResult<ObjCCategoryInfo> {
+        let categoryName = name(in: machO) ?? "<unknown>"
+        let targetClassName = className(in: machO) ?? "<unknown>"
+        var context = ObjCProtocolTraversalContext(
+            subject: .category(className: targetClassName, name: categoryName)
+        )
+        let value = _readInfo(in: machO, options: options, context: &context)
+        return .init(
+            value: value,
+            diagnostics: context.diagnostics,
+            tableDiagnostics: context.tableDiagnostics
+        )
+    }
+
+    private func _readInfo(
+        in machO: MachOFile,
+        options: ObjCInfoOptions,
+        context: inout ObjCProtocolTraversalContext
+    ) -> ObjCCategoryInfo? {
         guard let name = name(in: machO),
               let className = className(in: machO) else {
             return nil
         }
+        let tableSubject = ObjCMetadataTableDiagnostic.MetadataSubject.category(
+            className: className,
+            name: name
+        )
 
-        let protocols = protocolList(in: machO)?
+        let protocols = protocolListResolution(in: machO)
             .referencedProtocolInfos(
-                in: machO,
-                options: options.protocolInfoOptions
-            ) ?? []
+                options: options.protocolInfoOptions,
+                context: &context
+            )
 
         // Instance
-        let propertiesList = instancePropertyList(in: machO)
-        let properties = propertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: false) } ?? []
+        let properties = context.propertyInfos(
+            from: readFilePropertyList(
+                at: layout.instanceProperties,
+                field: .instanceProperties,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceProperty,
+            isClassProperty: false
+        )
 
-        let methodsList = instanceMethodList(in: machO)
-        let methods = methodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: false) } ?? []
+        let methods = context.methodInfos(
+            from: readFileMethodList(
+                at: layout.instanceMethods,
+                field: .instanceMethods,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .instanceMethod,
+            isClassMethod: false
+        )
 
         // Meta
-        let classPropertiesList = classPropertyList(in: machO)
-        let classProperties = classPropertiesList?
-            .properties(in: machO)
-            .compactMap { $0.info(isClassProperty: true) } ?? []
+        let classProperties = context.propertyInfos(
+            from: readFilePropertyList(
+                at: layout._classProperties,
+                field: ._classProperties,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .classProperty,
+            isClassProperty: true
+        )
 
-        let classMethodsList = classMethodList(in: machO)
-        let classMethods = classMethodsList?
-            .methods(in: machO)?
-            .compactMap { $0.info(isClassMethod: true) } ?? []
+        let classMethods = context.methodInfos(
+            from: readFileMethodList(
+                at: layout.classMethods,
+                field: .classMethods,
+                in: machO
+            ),
+            in: machO,
+            subject: tableSubject,
+            kind: .classMethod,
+            isClassMethod: true
+        )
 
         return .init(
             name: name,
@@ -702,77 +1693,90 @@ extension ObjCCategoryProtocol {
     }
 }
 
-// MARK: - Relative list resolution
-
-// Note:
-// When a relative list list exists for a given list kind, the corresponding
-// regular list is guaranteed to be nil. The helpers below therefore consult
-// the relative list list first and only fall back to the regular list when
-// no relative list list is present.
-fileprivate extension ObjCClassRODataProtocol {
-    func resolvedMethodList(
-        in machO: MachOFile,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOFile, ObjCMethodList)? {
-        if let relative = methodRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
+private extension ObjCCategoryProtocol {
+    func categorySymbolClassName(in machO: MachOImage) -> String? {
+        guard let section = machO.sectionNumber(for: .__objc_const),
+              let symbol = machO.symbol(for: offset, inSection: section),
+              symbol.name.starts(with: "__CATEGORY_") else {
+            return nil
         }
-        return methodList(in: machO).map { (machO, $0) }
+        return symbol.name
+            .replacingOccurrences(of: "__CATEGORY_", with: "")
+            .components(separatedBy: "_$_")
+            .first
     }
 
-    func resolvedPropertyList(
-        in machO: MachOFile,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOFile, ObjCPropertyList)? {
-        if let relative = propertyRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
+    func loadedCategoryClassName(
+        _ relation: (MachOImage, ObjCClass)
+    ) -> String? {
+        let (machO, cls) = relation
+        var data: ObjCClass.ClassROData?
+        if let direct = cls.classROData(in: machO) {
+            data = direct
         }
-        return propertyList(in: machO).map { (machO, $0) }
+        if let rw = cls.classRWData(in: machO) {
+            if let readOnly = rw.classROData(in: machO) {
+                data = readOnly
+            }
+            if let ext = rw.ext(in: machO),
+               let readOnly = ext.classROData(in: machO) {
+                data = readOnly
+            }
+        }
+        return data?.name(in: machO)
     }
+}
 
-    func resolvedProtocolList(
-        in machO: MachOFile,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOFile, ObjCProtocolList)? {
-        if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
+extension ObjCRelativeListResolution where
+    Failure == ObjCRelativeListFailure,
+    Source: ObjCMetadataTableSource,
+    List: EntrySizeListProtocol
+{
+    func memberValues<Value, Output>(
+        className: String,
+        kind: ObjCMemberListDiagnostic.Kind,
+        context: inout ObjCProtocolTraversalContext,
+        tableKind: ObjCMetadataTableDiagnostic.MemberKind,
+        entryStride: (Source, List) -> Int,
+        read: (Source, List) -> ObjCMemberTableReadOutcome<Value>,
+        transform: (Value) -> Output?
+    ) -> [Output] {
+        switch self {
+        case .absent:
+            return []
+        case .failure(let failure):
+            context.record(
+                memberListFailure: failure,
+                className: className,
+                kind: kind
+            )
+            return []
+        case .entries(let entries):
+            var values: [Output] = []
+            for entry in entries {
+                switch entry {
+                case .failure(let failure):
+                    context.record(
+                        memberListFailure: failure,
+                        className: className,
+                        kind: kind
+                    )
+                case let .resolved(source, list):
+                    values.append(
+                        contentsOf: ObjCMetadataTableDiagnosticRecorder.memberValues(
+                            from: read(source, list),
+                            list: list,
+                            in: source,
+                            subject: .class(name: className),
+                            kind: tableKind,
+                            context: &context,
+                            entryStride: entryStride(source, list),
+                            transform: transform
+                        )
+                    )
+                }
+            }
+            return values
         }
-        return protocolList(in: machO).map { (machO, $0) }
-    }
-
-    func resolvedMethodList(
-        in machO: MachOImage,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOImage, ObjCMethodList)? {
-        if let relative = methodRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
-        }
-        return methodList(in: machO).map { (machO, $0) }
-    }
-
-    func resolvedPropertyList(
-        in machO: MachOImage,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOImage, ObjCPropertyList)? {
-        if let relative = propertyRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
-        }
-        return propertyList(in: machO).map { (machO, $0) }
-    }
-
-    func resolvedProtocolList(
-        in machO: MachOImage,
-        imageIndex: @autoclosure () -> Int?
-    ) -> (MachOImage, ObjCProtocolList)? {
-        if let relative = protocolRelativeListList(in: machO),
-           let resolved = relative.list(in: machO, forImageIndex: imageIndex()) {
-            return resolved
-        }
-        return protocolList(in: machO).map { (machO, $0) }
     }
 }

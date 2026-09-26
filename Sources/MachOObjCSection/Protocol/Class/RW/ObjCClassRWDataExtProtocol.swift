@@ -34,68 +34,133 @@ extension ObjCClassRWDataExtProtocol {
     // before dereferencing.
 
     public func classROData(in machO: MachOImage) -> ObjCClassROData? {
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ro))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedAddress)) else {
-            return nil
-        }
-        let layout = ptr
-            .assumingMemoryBound(to: ObjCClassROData.Layout.self)
-            .pointee
-        let classData = ObjCClassROData(
-            layout: layout,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
+        readClassROData(in: machO).value
+    }
 
-        return classData
+    internal func readClassROData(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ObjCClassROData> {
+        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ro))
+        guard strippedAddress != 0 else { return .absent }
+        guard let address = UInt(exactly: strippedAddress),
+              let ptr = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(.missingBackingData)
+        }
+        let byteCount = MemoryLayout<ObjCClassROData.Layout>.size
+        guard isPointerSafelyReadable(ptr, length: byteCount) else {
+            return .failure(
+                .unreadableImageRange(address: address, byteCount: byteCount)
+            )
+        }
+        return .value(
+            ObjCClassROData(
+                layout: ptr.loadUnaligned(as: ObjCClassROData.Layout.self),
+                offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
+            )
+        )
     }
 
     public func methodList(in machO: MachOImage) -> ObjCMethodArray? {
-        guard layout.methods > 0 else { return nil }
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.methods))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress)
-        ) else {
+        guard let storage = readListArrayStorage(layout.methods, in: machO).value else {
             return nil
         }
-
-        let lists = ObjCMethodArray(
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
+        return ObjCMethodArray(
+            offset: storage.taggedOffset,
             is64Bit: machO.is64Bit
         )
-
-        return lists
     }
 
     public func propertyList(in machO: MachOImage) -> ObjCPropertyArray? {
-        guard layout.properties > 0 else { return nil }
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.properties))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress)
-        ) else {
+        guard let storage = readListArrayStorage(layout.properties, in: machO).value else {
             return nil
         }
-        let lists = ObjCPropertyArray(
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr),
+        return ObjCPropertyArray(
+            offset: storage.taggedOffset,
             is64Bit: machO.is64Bit
         )
-        return lists
     }
 
     public func protocolList(in machO: MachOImage) -> ObjCProtocolArray? {
-        guard layout.protocols > 0 else { return nil }
-        let strippedAddress = machO.stripPointerTags(of: numericCast(layout.protocols))
-        guard let ptr = UnsafeRawPointer(
-            bitPattern: UInt(strippedAddress)
-        ) else {
+        guard let storage = readListArrayStorage(layout.protocols, in: machO).value else {
             return nil
         }
-        let lists = ObjCProtocolArray(
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
-        )
-
-        return lists
+        return ObjCProtocolArray(offset: storage.taggedOffset)
     }
 
+    /// Reads the method list-array field and retains recoverable diagnostics.
+    @_spi(Diagnostics)
+    public func readMethodLists(
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCMethodList,
+        ObjCMethodRelativeListList
+    > {
+        ObjCMethodArray.readLists(
+            readListArrayStorage(layout.methods, in: machO),
+            in: machO,
+            is64Bit: machO.is64Bit
+        )
+    }
+
+    /// Reads the property list-array field and retains recoverable diagnostics.
+    @_spi(Diagnostics)
+    public func readPropertyLists(
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCPropertyList,
+        ObjCPropertyRelativeListList
+    > {
+        ObjCPropertyArray.readLists(
+            readListArrayStorage(layout.properties, in: machO),
+            in: machO,
+            is64Bit: machO.is64Bit
+        )
+    }
+
+    /// Reads the protocol list-array field and retains recoverable diagnostics.
+    @_spi(Diagnostics)
+    public func readProtocolLists(
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayReadResult<
+        ObjCProtocolArray.ObjCProtocolList,
+        ObjCProtocolArray.ObjCProtocolRelativeListList
+    > {
+        ObjCProtocolArray.readLists(
+            readListArrayStorage(layout.protocols, in: machO),
+            in: machO
+        )
+    }
+
+    private func readListArrayStorage(
+        _ rawPointer: Layout.Pointer,
+        in machO: MachOImage
+    ) -> ObjCLoadedListArrayStorageRead {
+        let diagnosticRawValue = UInt64(truncatingIfNeeded: rawPointer)
+        guard let rawValue = UInt64(exactly: rawPointer) else {
+            return .failure(
+                representation: nil,
+                provenance: .init(),
+                reason: .invalidPointer(rawValue: diagnosticRawValue)
+            )
+        }
+        if machO.is64Bit {
+            return ObjCLoadedListArrayReader.storage(
+                from: rawValue,
+                in: machO
+            )
+        }
+        guard let rawValue32 = UInt32(exactly: rawValue) else {
+            return .failure(
+                representation: nil,
+                provenance: .init(),
+                reason: .invalidPointer(rawValue: rawValue)
+            )
+        }
+        return ObjCLoadedListArrayReader.storage(
+            from: rawValue32,
+            in: machO
+        )
+    }
 
     public func demangledName(in machO: MachOImage) -> String? {
         guard layout.demangledName > 0 else { return nil }

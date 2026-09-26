@@ -29,38 +29,29 @@ extension ObjCProtocolRelativeListList64 {
         offset: Int
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
-    }
-
-    public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
-
-#if canImport(MachO)
-        guard let cache: DyldCacheLoaded = .current else { return nil }
-        guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
-
-        let list = List(
-            ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr)
-        )
-
-        return (machO, list)
-#else
-        return nil
-#endif
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
         }
 
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
+        guard let header: List.Header = location.cache.fileHandle.readLayout(
+            offset: location.fileOffset,
+            as: List.Header.self
+        ) else {
+            return nil
+        }
+        guard let listOffset = Int(exactly: offset) else { return nil }
         let list = List(
-            offset: numericCast(offset),
+            offset: listOffset,
             header: header
         )
 
@@ -88,38 +79,29 @@ extension ObjCProtocolRelativeListList32 {
         offset: Int
     ) {
         self.offset = offset
-        self.header = ptr.assumingMemoryBound(to: Header.self).pointee
-    }
-
-    public func list(in machO: MachOImage, for entry: Entry) -> (MachOImage, List)? {
-        let offset = entry.offset + entry.listOffset
-        let ptr = machO.ptr.advanced(by: offset)
-
-#if canImport(MachO)
-        guard let cache: DyldCacheLoaded = .current else { return nil }
-        guard let machO = cache.machO(at: entry.imageIndex) else { return nil }
-
-        let list = List(
-            ptr: ptr,
-            offset: .init(bitPattern: ptr) - .init(bitPattern: machO.ptr)
-        )
-
-        return (machO, list)
-#else
-        return nil
-#endif
+        self.header = ptr.loadUnaligned(as: Header.self)
     }
 
     public func list(in machO: MachOFile, for entry: Entry) -> (MachOFile, List)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let location = machO.relativeListLocation(for: entry) else {
             return nil
         }
 
-        let header: List.Header = location.cache.fileHandle.read(offset: location.fileOffset)
+        guard let header: List.Header = location.cache.fileHandle.readLayout(
+            offset: location.fileOffset,
+            as: List.Header.self
+        ) else {
+            return nil
+        }
+        guard let listOffset = Int(exactly: offset) else { return nil }
         let list = List(
-            offset: numericCast(offset),
+            offset: listOffset,
             header: header
         )
 

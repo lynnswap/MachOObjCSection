@@ -14,6 +14,24 @@ internal import FileIO
 @_implementationOnly import FileIO
 #endif
 
+@inline(__always)
+internal func checkedCacheAddress(
+    sharedRegionStart: UInt64,
+    offset: UInt64
+) -> UInt64? {
+    let (address, overflow) = sharedRegionStart.addingReportingOverflow(offset)
+    return overflow ? nil : address
+}
+
+@inline(__always)
+internal func checkedCacheOffset(
+    address: UInt64,
+    sharedRegionStart: UInt64
+) -> UInt64? {
+    let (offset, underflow) = address.subtractingReportingOverflow(sharedRegionStart)
+    return underflow ? nil : offset
+}
+
 extension MachOFile {
     internal typealias File = MemoryMappedFile
 
@@ -54,9 +72,11 @@ extension MachOFile {
     /// - Returns: cache and file offset
     func cacheAndFileOffset(fromStart offset: UInt64) -> (DyldCache, UInt64)? {
         guard let cache else { return nil }
-        return cacheAndFileOffset(
-            for: cache.mainCacheHeader.sharedRegionStart + offset
-        )
+        guard let address = checkedCacheAddress(
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart,
+            offset: offset
+        ) else { return nil }
+        return cacheAndFileOffset(for: address)
     }
 }
 
@@ -67,13 +87,18 @@ extension MachOFile {
     ) -> (File, UInt64)? {
         if !isLoadedFromDyldCache,
            let fileOffset = fileOffset(of: address) {
-            return (fileHandle, fileOffset + numericCast(headerStartOffset))
+            guard let headerOffset = UInt64(exactly: headerStartOffset) else { return nil }
+            let (absoluteOffset, overflow) = fileOffset.addingReportingOverflow(headerOffset)
+            guard !overflow else { return nil }
+            return (fileHandle, absoluteOffset)
         }
 
         if let cache,
-           let (_cache, fileOffset) = cacheAndFileOffset(
-            fromStart: address - cache.mainCacheHeader.sharedRegionStart
-           ) {
+           let cacheOffset = checkedCacheOffset(
+            address: address,
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+           ),
+           let (_cache, fileOffset) = cacheAndFileOffset(fromStart: cacheOffset) {
             return (_cache.fileHandle, fileOffset)
         }
 
@@ -84,7 +109,10 @@ extension MachOFile {
         forOffset offset: UInt64
     ) -> (File, UInt64)? {
         if !isLoadedFromDyldCache {
-            return (fileHandle, offset + numericCast(headerStartOffset))
+            guard let headerOffset = UInt64(exactly: headerStartOffset) else { return nil }
+            let (absoluteOffset, overflow) = offset.addingReportingOverflow(headerOffset)
+            guard !overflow else { return nil }
+            return (fileHandle, absoluteOffset)
         }
 
         if let (_cache, fileOffset) = cacheAndFileOffset(
@@ -107,14 +135,21 @@ extension MachOFile {
     func relativeListLocation(
         for entry: RelativeListListEntry
     ) -> (image: MachOFile, cache: DyldCache, fileOffset: UInt64)? {
-        let offset: UInt64 = numericCast(entry.offset + entry.listOffset)
+        guard let relativeOffset = addingSignedDisplacement(
+                entry.signedListOffset,
+                to: entry.offset
+              ),
+              let offset = UInt64(exactly: relativeOffset) else { return nil }
 
         guard let cache,
               let located = cache._machO(at: entry.imageIndex) else {
             return nil
         }
 
-        let address = cache.mainCacheHeader.sharedRegionStart + offset
+        guard let address = checkedCacheAddress(
+            sharedRegionStart: cache.mainCacheHeader.sharedRegionStart,
+            offset: offset
+        ) else { return nil }
         guard let fileOffset = located.cache.fileOffset(of: address) else {
             return nil
         }
@@ -128,7 +163,8 @@ extension MachOFile {
     func isBind(
         _ offset: Int
     ) -> Bool {
-        resolveBind(at: numericCast(offset)) != nil
+        guard let offset = UInt64(exactly: offset) else { return false }
+        return resolveBind(at: offset) != nil
     }
 
     func isBind(
@@ -147,7 +183,9 @@ extension MachOFile {
     /// Otherwise (non-cache Mach-O):
     /// - resolve against the file directly
     ///
-    /// If it cannot be resolved, we still return a `ResolvedValue` that contains:
+    /// Self-image chained binds are resolved through their symbol table definition.
+    /// Binds to other images or missing definitions have no file-backed value.
+    /// For pointers without a chained fixup, return a `ResolvedValue` that contains:
     /// - the raw input value (unrebased)
     /// - file offset resolved from that raw value
     ///
@@ -156,16 +194,35 @@ extension MachOFile {
     func resolveRebase(
         _ unresolvedValue: UnresolvedValue
     ) -> ResolvedValue? {
-        let offset: UInt64 = numericCast(unresolvedValue.fieldOffset)
+        guard let offset = UInt64(exactly: unresolvedValue.fieldOffset) else {
+            return nil
+        }
 
         if let (cache, _offset) = cacheAndFileOffset(
             fromStart: offset
         ) {
             let address = cache.resolveOptionalRebase(at: _offset) ?? unresolvedValue.value
+            guard let canonicalOffset = checkedCacheOffset(
+                address: address,
+                sharedRegionStart: cache.mainCacheHeader.sharedRegionStart
+            ) else { return nil }
             return .init(
                 address: address,
-                offset: address - cache.mainCacheHeader.sharedRegionStart
+                offset: canonicalOffset
             )
+        }
+
+        if let (binding, addend) = resolveBind(at: offset) {
+            guard binding.info.libraryOrdinal == 0,
+                  let name = dyldChainedFixups?.symbolName(for: binding.info.nameOffset),
+                  let symbolAddress = selfBindAddress(named: name),
+                  let base = UInt(exactly: symbolAddress),
+                  let importedAddress = addingSignedDisplacement(binding.info.addend, to: base),
+                  let address = addingSignedDisplacement(Int64(bitPattern: addend), to: importedAddress),
+                  let fileOffset = selfBindFileOffset(for: UInt64(address)) else {
+                return nil
+            }
+            return .init(address: UInt64(address), offset: fileOffset)
         }
 
         if let resolved = resolveOptionalRebase(
@@ -180,6 +237,10 @@ extension MachOFile {
             )
         }
 
+        // An unreadable chained bind/rebase is still encoded fixup data, not an address.
+        if chainedFixupPointer(at: offset) != nil {
+            return nil
+        }
         guard let fallbackFileOffset = fileOffset(of: unresolvedValue.value) else {
             return nil
         }
@@ -187,6 +248,64 @@ extension MachOFile {
             address: unresolvedValue.value,
             offset: fallbackFileOffset
         )
+    }
+
+    private func selfBindFileOffset(for address: UInt64) -> UInt64? {
+        // Symbol definitions are absolute addresses; fileOffset(of:) also accepts
+        // header-relative offsets and strips tags, which would hide invalid binds.
+        for segment in segments {
+            guard let addresses = segment.fileBackedVirtualMemoryRange,
+                  addresses.contains(address),
+                  segment.virtualMemoryRange?.contains(address) == true,
+                  let fileRange = segment.fileRange else { continue }
+            return fileRange.lowerBound + (address - addresses.lowerBound)
+        }
+        return nil
+    }
+
+    private func selfBindAddress(named name: String) -> UInt64? {
+        SelfBindSymbolCache.shared.symbols(for: self) {
+            readSelfBindSymbols()
+        }[name]
+    }
+
+    private func readSelfBindSymbols() -> [String: UInt64] {
+        guard let symtab = loadCommands.info(of: LoadCommand.symtab),
+              let (stringsFile, stringsOffset) = fileHandleAndOffset(forOffset: UInt64(symtab.stroff)),
+              let stringsStart = Int(exactly: stringsOffset),
+              let stringsSize = Int(exactly: symtab.strsize),
+              stringsStart <= stringsFile.size,
+              stringsSize <= stringsFile.size - stringsStart,
+              let strings = try? stringsFile.readData(offset: stringsStart, length: stringsSize) else {
+            return [:]
+        }
+        var definitions: [String: UInt64] = [:]
+        let stride = is64Bit ? MemoryLayout<nlist_64>.size : MemoryLayout<nlist>.size
+        for index in 0..<UInt64(symtab.nsyms) {
+            let entryOffset = UInt64(symtab.symoff) + index * UInt64(stride)
+            guard let (file, offset) = fileHandleAndOffset(forOffset: entryOffset) else { break }
+            let stringOffset: UInt32
+            let type: UInt8
+            let address: UInt64
+            if is64Bit {
+                guard let symbol = file.readLayout(offset: offset, as: nlist_64.self) else { break }
+                stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
+                type = symbol.n_type
+                address = isSwapped ? symbol.n_value.byteSwapped : symbol.n_value
+            } else {
+                guard let symbol = file.readLayout(offset: offset, as: nlist.self) else { break }
+                stringOffset = isSwapped ? symbol.n_un.n_strx.byteSwapped : symbol.n_un.n_strx
+                type = symbol.n_type
+                address = UInt64(isSwapped ? symbol.n_value.byteSwapped : symbol.n_value)
+            }
+            guard type & UInt8(N_STAB | N_TYPE | N_EXT) == UInt8(N_SECT | N_EXT),
+                  stringOffset < symtab.strsize,
+                  let end = strings[Int(stringOffset)...].firstIndex(of: 0),
+                  let name = String(bytes: strings[Int(stringOffset)..<end], encoding: .utf8),
+                  definitions[name] == nil else { continue }
+            definitions[name] = address
+        }
+        return definitions
     }
 }
 
@@ -213,6 +332,18 @@ extension MachOFile {
 
     // [dyld implementation](https://github.com/apple-oss-distributions/dyld/blob/66c652a1f1f6b7b5266b8bbfd51cb0965d67cc44/common/MachOFile.cpp#L3880)
     func findObjCSection64(for name: String) -> Section64? {
+        findObjCSection64AndSegment(for: name)?.section
+    }
+
+    func findObjCSection64AndSegment(
+        for section: ObjCMachOSection
+    ) -> (section: Section64, segment: SegmentCommand64)? {
+        findObjCSection64AndSegment(for: section.rawValue)
+    }
+
+    func findObjCSection64AndSegment(
+        for name: String
+    ) -> (section: Section64, segment: SegmentCommand64)? {
         let segmentNames = [
             "__DATA", "__DATA_CONST", "__DATA_DIRTY"
         ]
@@ -222,13 +353,25 @@ extension MachOFile {
                 continue
             }
             if let section = segment._section(for: name, in: self) {
-                return section
+                return (section, segment)
             }
         }
         return nil
     }
 
     func findObjCSection32(for name: String) -> Section? {
+        findObjCSection32AndSegment(for: name)?.section
+    }
+
+    func findObjCSection32AndSegment(
+        for section: ObjCMachOSection
+    ) -> (section: Section, segment: SegmentCommand)? {
+        findObjCSection32AndSegment(for: section.rawValue)
+    }
+
+    func findObjCSection32AndSegment(
+        for name: String
+    ) -> (section: Section, segment: SegmentCommand)? {
         let segmentNames = [
             "__DATA", "__DATA_CONST", "__DATA_DIRTY"
         ]
@@ -238,7 +381,7 @@ extension MachOFile {
                 continue
             }
             if let section = segment._section(for: name, in: self) {
-                return section
+                return (section, segment)
             }
         }
         return nil
@@ -258,5 +401,33 @@ extension MachOFile {
             return info.index
         }
         return nil
+    }
+}
+
+// Key by the MachOFile owner, including its slice, so indexes expire with the reader.
+private final class SelfBindSymbolCache: @unchecked Sendable {
+    static let shared = SelfBindSymbolCache()
+    private let lock = NSLock()
+    private final class Symbols {
+        let values: [String: UInt64]
+        init(_ values: [String: UInt64]) { self.values = values }
+    }
+#if canImport(ObjectiveC)
+    private let entries: NSMapTable<MachOFile, Symbols> = .weakToStrongObjects()
+#else
+    private var entries = WeakKeyStrongValueMap<MachOFile, Symbols>()
+#endif
+
+    func symbols(for owner: MachOFile, build: () -> [String: UInt64]) -> [String: UInt64] {
+        lock.lock()
+        let cached = entries.object(forKey: owner)
+        lock.unlock()
+        if let cached { return cached.values }
+
+        let symbols = Symbols(build())
+        lock.lock()
+        entries.setObject(symbols, forKey: owner)
+        lock.unlock()
+        return symbols.values
     }
 }

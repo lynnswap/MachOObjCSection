@@ -103,8 +103,8 @@ let package = Package(
                 isRelative: true
             ),
             remote: .package(
-                url: "https://github.com/MxIris-Reverse-Engineering/MachOKit",
-                from: "0.52.101"
+                url: "https://github.com/lynnswap/MachOKit.git",
+                revision: "8d451ca2e9d108f0a2024758b33b25e8faa2adbb"
             )
         ),
         .package(

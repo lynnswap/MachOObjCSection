@@ -27,6 +27,9 @@ MachOObjCSection 的内部文档。新增或重命名任何文档都必须同步
 | [0009](Evolutions/0009-objc-section-release-automation.md) | 推版本 tag 即自动发布 objc-section | Implemented |
 | [0010](Evolutions/0010-remove-objc-section-cli.md) | 移除 objc-section 命令行（并入 swift-section） | Accepted |
 
+| [draft](Evolutions/draft-safe-objc-protocol-metadata-traversal.md) | 安全读取并有界遍历 Objective-C protocol metadata | In Review |
+| [draft](Evolutions/draft-safe-relative-member-list-resolution.md) | 安全解析 Objective-C relative member list-of-lists | In Review |
+
 ## 使用指南
 
 | 文档 | 说明 |

@@ -44,30 +44,38 @@ extension ObjCClassRWDataProtocol {
 
 extension ObjCClassRWDataProtocol {
     public func classROData(in machO: MachOImage) -> ObjCClassROData? {
-        guard hasRO else { return nil }
+        readClassROData(in: machO).value
+    }
+
+    internal func readClassROData(
+        in machO: MachOImage
+    ) -> ObjCMetadataFieldRead<ObjCClassROData> {
+        guard hasRO else { return .absent }
 
         // ro_or_rw_ext is PAC-signed on arm64e (objc4 stores it as a
         // PtrauthAuthAndStrip pointer). Strip the PAC bits before dereferencing.
         let strippedAddress = machO.stripPointerTags(of: numericCast(layout.ro_or_rw_ext))
-        guard let ptr = UnsafeRawPointer(bitPattern: UInt(strippedAddress)) else {
-            return nil
+        guard strippedAddress != 0 else { return .absent }
+        guard let address = UInt(exactly: strippedAddress),
+              let ptr = UnsafeRawPointer(bitPattern: address) else {
+            return .failure(.missingBackingData)
         }
         // Foreign-platform binaries loaded standalone (e.g. an iOS simulator
         // framework `dlopen`'d on macOS) may carry stale preopt offsets here
         // that point to unmapped memory; probe before the load to avoid a
         // segfault inside the implicit memcpy of `.pointee`.
-        guard isPointerSafelyReadable(ptr, length: MemoryLayout<ObjCClassROData.Layout>.size) else {
-            return nil
+        let byteCount = MemoryLayout<ObjCClassROData.Layout>.size
+        guard isPointerSafelyReadable(ptr, length: byteCount) else {
+            return .failure(
+                .unreadableImageRange(address: address, byteCount: byteCount)
+            )
         }
-        let layout = ptr
-            .assumingMemoryBound(to: ObjCClassROData.Layout.self)
-            .pointee
-        let classData = ObjCClassROData(
-            layout: layout,
-            offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
+        return .value(
+            ObjCClassROData(
+                layout: ptr.loadUnaligned(as: ObjCClassROData.Layout.self),
+                offset: Int(bitPattern: ptr) - Int(bitPattern: machO.ptr)
+            )
         )
-
-        return classData
     }
 
     public func ext(in machO: MachOImage) -> ObjCClassRWDataExt? {

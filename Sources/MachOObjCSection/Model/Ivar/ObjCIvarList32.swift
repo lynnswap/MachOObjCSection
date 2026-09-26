@@ -26,25 +26,3 @@ public struct ObjCIvarList32: ObjCIvarListProtocol {
         self.offset = offset
     }
 }
-
-extension ObjCIvarList32 {
-    public func ivars(in machO: MachOFile) -> [ObjCIvar]? {
-        guard let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forOffset: numericCast(offset)) else {
-            return []
-        }
-
-        let size = MemoryLayout<ObjCIvar.Layout>.size
-        let sequence: DataSequence<ObjCIvar.Layout> = fileHandle
-            .readDataSequence(
-                offset: fileOffset + numericCast(MemoryLayout<Header>.size),
-                numberOfElements: count
-            )
-        return sequence.enumerated()
-            .map {
-                .init(
-                    layout: $1,
-                    offset: offset + MemoryLayout<Header>.size + size * $0
-                )
-            }
-    }
-}

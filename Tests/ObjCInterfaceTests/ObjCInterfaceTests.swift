@@ -91,6 +91,36 @@ struct ObjCInterfaceTests {
         #expect(builder.unionInterface(named: "NoSuchUnion") == nil)
     }
 
+    @Test("Readonly properties do not hide explicitly declared setter methods", arguments: [false, true])
+    func readonlyPropertySelectors(isClass: Bool) throws {
+        let image = try #require(MachOImage(name: "Foundation"))
+        let builder = ObjCInterfaceBuilder(indexer: .init(machO: image, imagePath: image.imagePath), machO: image)
+        var classMethods: Set<String> = []
+        var methods: Set<String> = []
+        builder.collectAccessorSelectors(of: .init(name: "value", attributesString: "Ti,R", isClassProperty: isClass), intoClassMethods: &classMethods, intoMethods: &methods)
+        #expect((isClass ? classMethods : methods) == ["value"])
+    }
+
+    @Test("Stripping protocol conformances removes declaration lists")
+    func stripsProtocolDeclarationLists() async throws {
+        let builder = try await Self.makeBuilder()
+        let rendered = try #require(builder.classInterface(named: "NSError", options: .init(stripProtocolConformance: true)))
+        let firstLine = try #require(rendered.string.split(separator: "\n").first)
+        #expect(!firstLine.contains("<"))
+    }
+
+    @Test("Protocol member collection walks the full hierarchy once")
+    func nestedProtocolHierarchy() throws {
+        let image = try #require(MachOImage(name: "Foundation"))
+        let builder = ObjCInterfaceBuilder(indexer: .init(machO: image, imagePath: image.imagePath), machO: image)
+        func proto(_ name: String, parents: [ObjCProtocolInfo] = []) -> ObjCProtocolInfo {
+            .init(name: name, protocols: parents, classProperties: [], properties: [], classMethods: [], methods: [], optionalClassMethods: [], optionalMethods: [])
+        }
+        let parent = proto("Parent")
+        let child = proto("Child", parents: [parent])
+        #expect(builder.protocolHierarchy([child, parent]).map(\.name) == ["Child", "Parent"])
+    }
+
     // MARK: - Comment Switches
 
     @Test("addIvarOffsetComments adds offsets, and off by default")
@@ -211,7 +241,7 @@ struct ObjCInterfaceTests {
             guard let classInfo = indexer.classGroup(forName: className)?.info.first else { continue }
             let methodNames = Set(classInfo.methods.map(\.name))
 
-            for property in classInfo.properties where property.customSetter == nil {
+            for property in classInfo.properties where property.customSetter == nil && !property.attributes.contains(.readonly) {
                 let setterSelector = "set" + property.name.box.uppercasedFirst() + ":"
                 if methodNames.contains(setterSelector) {
                     target = (className, setterSelector)
@@ -249,7 +279,7 @@ struct ObjCInterfaceTests {
             guard let classInfo = indexer.classGroup(forName: className)?.info.first else { continue }
             let methodNames = Set(classInfo.methods.map(\.name))
 
-            for property in classInfo.properties where property.customSetter == nil {
+            for property in classInfo.properties where property.customSetter == nil && !property.attributes.contains(.readonly) {
                 let lookalikeSelector = "set" + property.name.box.uppercasedFirst()
                 if methodNames.contains(lookalikeSelector) {
                     target = (className, lookalikeSelector)

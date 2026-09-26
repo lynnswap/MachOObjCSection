@@ -82,12 +82,22 @@ extension Transformer {
             return nil
         }
 
+        private static let typeKeywords = Set(Pattern.allCases.flatMap(\.keywords) + ["signed"])
+
         private func matchKeywords(
             _ keywords: [String],
             in components: [AtomicComponent],
             at startIndex: Int
         ) -> Int? {
-            guard !keywords.isEmpty else { return nil }
+            guard !keywords.isEmpty, components[startIndex].type == .keyword else { return nil }
+            func isTypeKeyword(_ component: AtomicComponent?) -> Bool {
+                guard let component else { return false }
+                return component.type == .keyword && Self.typeKeywords.contains(component.string)
+            }
+            let before = components[..<startIndex].last {
+                !($0.type == .standard && $0.string.allSatisfy(\.isWhitespace))
+            }
+            guard !isTypeKeyword(before) else { return nil }
 
             var ci = startIndex
             var ki = 0
@@ -110,7 +120,11 @@ extension Transformer {
                 consumed += 1
             }
 
-            return ki == keywords.count ? consumed : nil
+            guard ki == keywords.count else { return nil }
+            let after = components[ci...].first {
+                !($0.type == .standard && $0.string.allSatisfy(\.isWhitespace))
+            }
+            return isTypeKeyword(after) ? nil : consumed
         }
     }
 }

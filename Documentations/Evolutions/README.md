@@ -34,6 +34,8 @@
 | [0008](0008-objc-export-status.md) | ObjC 类与实例变量的导出状态查询 | Implemented |
 | [0009](0009-objc-section-release-automation.md) | 推版本 tag 即自动发布 objc-section | Implemented |
 | [0010](0010-remove-objc-section-cli.md) | 移除 objc-section 命令行（并入 swift-section） | Accepted |
+| [draft](draft-safe-objc-protocol-metadata-traversal.md) | 安全读取并有界遍历 Objective-C protocol metadata | In Review |
+| [draft](draft-safe-relative-member-list-resolution.md) | 安全解析 Objective-C relative member list-of-lists | In Review |
 
 0002 以 0001 为前置，两者共同构成「让 MachOObjCSection 具备与 MachOSwiftSection 对等的
 渲染 / 索引 / 命令行能力」这一条完整路线。

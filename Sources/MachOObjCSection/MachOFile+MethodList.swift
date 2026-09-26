@@ -51,46 +51,52 @@ extension MachOFile.ObjCMethodLists {
         }
 
         public mutating func next() -> Element? {
-            guard nextOffset < data.count else {
+            guard nextOffset >= 0, nextOffset < data.count else {
                 return nil
             }
-            let data = data.advanced(by: nextOffset)
-
-            guard let header: Element.Header = data.withUnsafeBytes({
-                guard let baseAddress = $0.baseAddress else {
-                    return nil
-                }
-                return baseAddress
-                    .assumingMemoryBound(to: Element.Header.self)
-                    .pointee
-            }) else { return nil }
-            let listSize = Element.size(for: header)
-
-            guard nextOffset + listSize <= data.count else {
+            let headerSize = MemoryLayout<Element.Header>.size
+            guard headerSize <= data.count - nextOffset else { return nil }
+            let header: Element.Header = data.withUnsafeBytes { bytes in
+                bytes.loadUnaligned(fromByteOffset: nextOffset, as: Element.Header.self)
+            }
+            let (listOffset, listOffsetOverflow) = tableStartOffset.addingReportingOverflow(
+                nextOffset
+            )
+            guard !listOffsetOverflow else { return nil }
+            let list = Element(
+                offset: listOffset,
+                header: header,
+                is64Bit: is64Bit
+            )
+            let expectedEntrySize = list.expectedEntrySize(is64Bit: is64Bit)
+            guard let listSize = Element.checkedSize(
+                for: header,
+                expectedEntrySize: expectedEntrySize
+            ), listSize <= data.count - nextOffset else {
                 return nil
             }
-
-            guard let list: Element = data.withUnsafeBytes({
-                guard let ptr = $0.baseAddress else {
-                    return nil
-                }
-                return Element(
-                    ptr: ptr,
-                    offset: tableStartOffset + nextOffset,
-                    is64Bit: is64Bit
-                )
-            }) else { return nil }
-
-            guard list.isValidEntrySize(is64Bit: is64Bit) else {
-                preconditionFailure()
-            }
-
-            defer {
-                nextOffset += list.size
-                nextOffset += nextOffset % numericCast(power(2, align))
-            }
-
+            let (endOffset, endOverflow) = nextOffset.addingReportingOverflow(listSize)
+            guard !endOverflow,
+                  let followingOffset = checkedAlignedOffset(
+                    endOffset,
+                    alignmentExponent: align
+                  ) else { return nil }
+            nextOffset = followingOffset
             return list
         }
     }
+}
+
+internal func checkedAlignedOffset(
+    _ offset: Int,
+    alignmentExponent: Int
+) -> Int? {
+    guard offset >= 0,
+          alignmentExponent >= 0,
+          alignmentExponent < Int.bitWidth - 1 else { return nil }
+    let alignment = 1 << alignmentExponent
+    let remainder = offset % alignment
+    guard remainder != 0 else { return offset }
+    let (result, overflow) = offset.addingReportingOverflow(alignment - remainder)
+    return overflow ? nil : result
 }
