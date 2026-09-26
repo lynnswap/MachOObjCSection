@@ -3,6 +3,7 @@ import Foundation
 import MachOKit
 import MachOObjCSection
 import ObjCDump
+import ObjCTypeDecodeKit
 import Semantic
 @testable import ObjCDeclarationRendering
 
@@ -27,6 +28,16 @@ struct ObjCDeclarationRenderingTests {
         }
         Issue.record("\(name) not found in Foundation")
         throw RenderingTestError.classNotFound
+    }
+
+    @Test("Array fields retain their declarator without leaking into the next field")
+    func arrayFieldDeclarator() throws {
+        let context = ObjCRenderingContext(machO: try Self.foundationImage())
+        let array = ObjCField(type: .array(type: .char, size: 16), name: "bytes")
+        let scalar = ObjCField(type: .int, name: "count")
+        #expect(array.semanticString(fallbackName: "unused", context: context).string == "char bytes[16];")
+        #expect(scalar.semanticString(fallbackName: "unused", context: context).string == "int count;")
+        #expect(context.currentArray == nil)
     }
 
     // `Swift.Error` spelled out: `Semantic` exports an `Error` component that

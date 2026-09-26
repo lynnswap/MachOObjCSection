@@ -199,6 +199,7 @@ private func inspectTableDiagnostic(
          .unresolvedListPointer,
          .missingListBackingData,
          .invalidEntryLogicalOffset,
+         .unresolvedEntryPointer,
          .invalidMethodImplementationOffset,
          .invalidRelativeDisplacement:
         break

@@ -8,6 +8,7 @@ import Foundation
 
 internal enum ObjCMetadataTableEntryFailureReason: Error, Equatable {
     case invalidLogicalOffset
+    case unresolvedPointer
     case invalidImplementationOffset
     case invalidRelativeDisplacement
     case unreadableFileRange(offset: UInt64, byteCount: Int)

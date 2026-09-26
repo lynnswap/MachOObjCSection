@@ -42,7 +42,7 @@ public final class ObjCInterfaceIndexer: @unchecked Sendable {
 
     /// A C `struct` / `union` definition harvested from the ivar / method /
     /// property type encodings of the image's ObjC metadata.
-    private struct CStructOrUnion: Hashable {
+    struct CStructOrUnion: Hashable {
         let name: String
 
         let fields: [ObjCField]
@@ -207,34 +207,7 @@ public final class ObjCInterfaceIndexer: @unchecked Sendable {
         var classInfoCache: [String: ObjCClassInfo] = [:]
 
         func setObjCType(_ type: ObjCType) {
-            switch type {
-            case .struct(let name, let fields):
-                if let name {
-                    let newStruct = CStructOrUnion(name: name, fields: fields ?? [])
-                    guard !newStruct.hasBitFieldOnly else { return }
-                    if let existStruct = structsByName[name] {
-                        if existStruct.numberOfHasNameFields < newStruct.numberOfHasNameFields {
-                            structsByName[name] = newStruct
-                        }
-                    } else {
-                        structsByName[name] = newStruct
-                    }
-                }
-            case .union(let name, let fields):
-                if let name {
-                    let newUnion = CStructOrUnion(name: name, fields: fields ?? [])
-                    guard !newUnion.hasBitFieldOnly else { return }
-                    if let existUnion = unionsByName[name] {
-                        if existUnion.numberOfHasNameFields < newUnion.numberOfHasNameFields {
-                            unionsByName[name] = newUnion
-                        }
-                    } else {
-                        unionsByName[name] = newUnion
-                    }
-                }
-            default:
-                break
-            }
+            Self.collectTypes(type, structsByName: &structsByName, unionsByName: &unionsByName)
         }
 
         func setObjCTypeFromMethods(_ methods: [ObjCMethodInfo]) {
@@ -428,6 +401,47 @@ public final class ObjCInterfaceIndexer: @unchecked Sendable {
         unions = unionsByName
     }
 
+    static func collectTypes(
+        _ type: ObjCType,
+        structsByName: inout [String: CStructOrUnion],
+        unionsByName: inout [String: CStructOrUnion]
+    ) {
+        switch type {
+        case .struct(let name, let fields):
+            for field in fields ?? [] { collectTypes(field.type, structsByName: &structsByName, unionsByName: &unionsByName) }
+            if let name {
+                let newStruct = CStructOrUnion(name: name, fields: fields ?? [])
+                guard !newStruct.hasBitFieldOnly else { return }
+                if let existStruct = structsByName[name] {
+                    if existStruct.numberOfHasNameFields < newStruct.numberOfHasNameFields {
+                        structsByName[name] = newStruct
+                    }
+                } else {
+                    structsByName[name] = newStruct
+                }
+            }
+        case .union(let name, let fields):
+            for field in fields ?? [] { collectTypes(field.type, structsByName: &structsByName, unionsByName: &unionsByName) }
+            if let name {
+                let newUnion = CStructOrUnion(name: name, fields: fields ?? [])
+                guard !newUnion.hasBitFieldOnly else { return }
+                if let existUnion = unionsByName[name] {
+                    if existUnion.numberOfHasNameFields < newUnion.numberOfHasNameFields {
+                        unionsByName[name] = newUnion
+                    }
+                } else {
+                    unionsByName[name] = newUnion
+                }
+            }
+        case .pointer(let type), .array(let type, _), .modified(_, let type):
+            collectTypes(type, structsByName: &structsByName, unionsByName: &unionsByName)
+        case .block(let result, let arguments):
+            if let result { collectTypes(result, structsByName: &structsByName, unionsByName: &unionsByName) }
+            for argument in arguments ?? [] { collectTypes(argument, structsByName: &structsByName, unionsByName: &unionsByName) }
+        default:
+            break
+        }    }
+
     /// Resolve `cls` to its own `ObjCClassInfo` followed by the
     /// `ObjCClassInfo` of every superclass, walking `superClass(in:)` across
     /// image boundaries. `cache` memoizes `info(in:)` extraction so a deep
@@ -449,11 +463,14 @@ public final class ObjCInterfaceIndexer: @unchecked Sendable {
 
         var resultInfos: [ObjCClassInfo] = [currentInfo]
 
+        var visited = Set([UInt(bitPattern: machO.ptr.advanced(by: cls.offset))])
         var machOAndSuperclass = cls.superClass(in: machO)
 
         while let currentMachOAndSuperclass = machOAndSuperclass {
             let currentMachO = currentMachOAndSuperclass.0
             let currentSuperclass = currentMachOAndSuperclass.1
+            let identity = UInt(bitPattern: currentMachO.ptr.advanced(by: currentSuperclass.offset))
+            guard visited.insert(identity).inserted else { break }
 
             machOAndSuperclass = currentSuperclass.superClass(in: currentMachO)
 

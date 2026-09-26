@@ -84,6 +84,18 @@ final class ObjCFileMemberTableSafetyTests: XCTestCase {
         )
     }
 
+    func testUnresolvedPropertyPointersLeaveEntryDiagnostics() throws {
+        for is64Bit in [false, true] {
+            for invalidName in [false, true] {
+                let fixture = try DirectMemberFileFixture(is64Bit: is64Bit)
+                let list = fixture.writeProperty(name: "broken", attributes: "T@", invalidName: invalidName, invalidAttributes: !invalidName)
+                let outcome = list.readProperties(in: fixture.machO)
+                XCTAssertEqual(outcome.values?.count, 0)
+                XCTAssertEqual(outcome.success?.failures, [.init(index: 0, reason: .unresolvedPointer)])
+            }
+        }
+    }
+
     func testPropertiesAndIvarsDecodeFor32And64BitFiles() throws {
         for is64Bit in [false, true] {
             let fixture = try DirectMemberFileFixture(is64Bit: is64Bit)
@@ -527,7 +539,7 @@ private final class DirectMemberFileFixture {
         return .init(offset: Self.listOffset, header: header, is64Bit: true)
     }
 
-    func writeProperty(name: String, attributes: String) -> ObjCPropertyList {
+    func writeProperty(name: String, attributes: String, invalidName: Bool = false, invalidAttributes: Bool = false) -> ObjCPropertyList {
         data.storeCString(name, at: Self.nameOffset)
         data.storeCString(attributes, at: Self.typeOffset)
         let entrySize = is64Bit
@@ -541,16 +553,16 @@ private final class DirectMemberFileFixture {
         if is64Bit {
             data.store(
                 ObjCProperty.Property64(
-                    name: address(Self.nameOffset),
-                    attributes: address(Self.typeOffset)
+                    name: invalidName ? .max : address(Self.nameOffset),
+                    attributes: invalidAttributes ? .max : address(Self.typeOffset)
                 ),
                 at: entryOffset
             )
         } else {
             data.store(
                 ObjCProperty.Property32(
-                    name: UInt32(address(Self.nameOffset)),
-                    attributes: UInt32(address(Self.typeOffset))
+                    name: invalidName ? .max : UInt32(address(Self.nameOffset)),
+                    attributes: invalidAttributes ? .max : UInt32(address(Self.typeOffset))
                 ),
                 at: entryOffset
             )

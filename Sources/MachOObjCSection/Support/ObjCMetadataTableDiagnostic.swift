@@ -153,6 +153,7 @@ public struct ObjCMetadataTableDiagnostic: Sendable, Equatable {
         case missingReferencedFileBackingData(logicalOffset: UInt64)
         case unreadableFileHeader(offset: UInt64, byteCount: Int)
         case invalidEntryLogicalOffset
+        case unresolvedEntryPointer
         case invalidMethodImplementationOffset
         case invalidRelativeDisplacement
 

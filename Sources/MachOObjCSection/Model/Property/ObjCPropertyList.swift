@@ -106,7 +106,7 @@ extension ObjCPropertyList {
             case .failure(let failure):
                 return .failure(failure)
             case .success(let entries):
-                var unresolved: [ObjCProperty.UnresolvedProperty] = []
+                var unresolved: [(index: Int, value: ObjCProperty.UnresolvedProperty)] = []
                 var failures: [ObjCMetadataTableEntryFailure] = []
                 unresolved.reserveCapacity(entries.count)
                 for entry in entries {
@@ -121,8 +121,9 @@ extension ObjCPropertyList {
                         failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
                         continue
                     }
-                    unresolved.append(
-                        ObjCProperty.UnresolvedProperty(
+                    unresolved.append((
+                        index: entry.index,
+                        value: ObjCProperty.UnresolvedProperty(
                             name: .init(
                                 fieldOffset: fieldOffset,
                                 value: entry.value.name
@@ -132,10 +133,15 @@ extension ObjCPropertyList {
                                 value: entry.value.attributes
                             )
                         )
-                    )
+                    ))
                 }
-                let properties = unresolved.compactMap { machO.resolveRebase($0) }
-                .map {
+                let properties = unresolved.compactMap { entry -> ObjCProperty.ResolvedProperty? in
+                    guard let property = machO.resolveRebase(entry.value) else {
+                        failures.append(.init(index: entry.index, reason: .unresolvedPointer))
+                        return nil
+                    }
+                    return property
+                }.map {
                     var name = ""
                     if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
                         name = fileHandle.readString(
@@ -167,7 +173,7 @@ extension ObjCPropertyList {
             case .failure(let failure):
                 return .failure(failure)
             case .success(let entries):
-                var unresolved: [ObjCProperty.UnresolvedProperty] = []
+                var unresolved: [(index: Int, value: ObjCProperty.UnresolvedProperty)] = []
                 var failures: [ObjCMetadataTableEntryFailure] = []
                 unresolved.reserveCapacity(entries.count)
                 for entry in entries {
@@ -182,8 +188,9 @@ extension ObjCPropertyList {
                         failures.append(.init(index: entry.index, reason: .invalidLogicalOffset))
                         continue
                     }
-                    unresolved.append(
-                        ObjCProperty.UnresolvedProperty(
+                    unresolved.append((
+                        index: entry.index,
+                        value: ObjCProperty.UnresolvedProperty(
                             name: .init(
                                 fieldOffset: fieldOffset,
                                 value: UInt64(entry.value.name)
@@ -193,10 +200,15 @@ extension ObjCPropertyList {
                                 value: UInt64(entry.value.attributes)
                             )
                         )
-                    )
+                    ))
                 }
-                let properties = unresolved.compactMap { machO.resolveRebase($0) }
-                .map {
+                let properties = unresolved.compactMap { entry -> ObjCProperty.ResolvedProperty? in
+                    guard let property = machO.resolveRebase(entry.value) else {
+                        failures.append(.init(index: entry.index, reason: .unresolvedPointer))
+                        return nil
+                    }
+                    return property
+                }.map {
                     var name = ""
                     if let (fileHandle, fileOffset) = machO.fileHandleAndOffset(forResolvedValue: $0.name) {
                         name = fileHandle.readString(

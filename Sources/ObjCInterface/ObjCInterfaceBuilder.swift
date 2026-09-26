@@ -100,11 +100,11 @@ public struct ObjCInterfaceBuilder {
         }
 
         if options.stripProtocolConformance {
-            for protocolInfo in currentClassInfo.protocols {
-                needsStripClassProperties.insert(contentsOf: protocolInfo.classProperties.map(\.name))
-                needsStripProperties.insert(contentsOf: protocolInfo.properties.map(\.name))
-                needsStripClassMethods.insert(contentsOf: protocolInfo.classMethods.map(\.name))
-                needsStripMethods.insert(contentsOf: protocolInfo.methods.map(\.name))
+            for protocolInfo in protocolHierarchy(currentClassInfo.protocols) {
+                needsStripClassProperties.insert(contentsOf: (protocolInfo.classProperties + protocolInfo.optionalClassProperties).map(\.name))
+                needsStripProperties.insert(contentsOf: (protocolInfo.properties + protocolInfo.optionalProperties).map(\.name))
+                needsStripClassMethods.insert(contentsOf: (protocolInfo.classMethods + protocolInfo.optionalClassMethods).map(\.name))
+                needsStripMethods.insert(contentsOf: (protocolInfo.methods + protocolInfo.optionalMethods).map(\.name))
             }
         }
 
@@ -140,7 +140,7 @@ public struct ObjCInterfaceBuilder {
             imageName: currentClassInfo.imageName,
             instanceSize: currentClassInfo.instanceSize,
             superClassName: currentClassInfo.superClassName,
-            protocols: currentClassInfo.protocols,
+            protocols: options.stripProtocolConformance ? [] : currentClassInfo.protocols,
             ivars: currentClassInfo.ivars.removingAll { needsStripIvars.contains($0.name) },
             classProperties: currentClassInfo.classProperties.removingAll { needsStripClassProperties.contains($0.name) },
             properties: currentClassInfo.properties.removingAll { needsStripProperties.contains($0.name) },
@@ -195,7 +195,7 @@ public struct ObjCInterfaceBuilder {
         }
 
         if options.stripProtocolConformance {
-            for protocolInfo in currentProtocolInfo.protocols {
+            for protocolInfo in protocolHierarchy(currentProtocolInfo.protocols) {
                 needsStripClassProperties.insert(contentsOf: protocolInfo.classProperties.map(\.name))
                 needsStripProperties.insert(contentsOf: protocolInfo.properties.map(\.name))
                 needsStripClassMethods.insert(contentsOf: protocolInfo.classMethods.map(\.name))
@@ -224,7 +224,7 @@ public struct ObjCInterfaceBuilder {
 
         let finalProtocolInfo = ObjCProtocolInfo(
             name: currentProtocolInfo.name,
-            protocols: currentProtocolInfo.protocols,
+            protocols: options.stripProtocolConformance ? [] : currentProtocolInfo.protocols,
             classProperties: currentProtocolInfo.classProperties.removingAll { needsStripClassProperties.contains($0.name) },
             properties: currentProtocolInfo.properties.removingAll { needsStripProperties.contains($0.name) },
             classMethods: currentProtocolInfo.classMethods.removingAll { needsStripClassMethods.contains($0.name) },
@@ -312,13 +312,26 @@ public struct ObjCInterfaceBuilder {
 
     // MARK: - Shared Stripping
 
+    func protocolHierarchy(_ roots: [ObjCProtocolInfo]) -> [ObjCProtocolInfo] {
+        var pending = Array(roots.reversed())
+        var visited: Set<String> = []
+        var result: [ObjCProtocolInfo] = []
+        while let current = pending.popLast() {
+            guard visited.insert(current.name).inserted else { continue }
+            result.append(current)
+            pending.append(contentsOf: current.protocols.reversed())
+        }
+        return result
+    }
+
+
     /// Records the selectors the compiler would synthesize for `property`, so
     /// that `stripSynthesizedMethods` can remove them.
     ///
     /// A property contributes its getter (its own name unless `G` overrides
     /// it) and, unless read-only in practice, a `setName:` setter (unless `S`
     /// overrides it).
-    private func collectAccessorSelectors(
+    func collectAccessorSelectors(
         of property: ObjCPropertyInfo,
         intoClassMethods classMethods: inout Set<String>,
         intoMethods methods: inout Set<String>
@@ -339,6 +352,7 @@ public struct ObjCInterfaceBuilder {
         // unrelated zero-argument method that happened to be named that way.
         // `customSetter` already carries its own colon, as it comes straight
         // from the property's `S` attribute.
+        guard !property.attributes.contains(.readonly) else { return }
         let setterName = property.customSetter ?? "set\(propertyName.uppercasedFirst):"
         if property.isClassProperty {
             classMethods.insert(setterName)

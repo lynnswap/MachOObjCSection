@@ -57,14 +57,17 @@ extension ObjCClass32 {
 extension ObjCClass32 {
     // https://github.com/apple-oss-distributions/objc4/blob/01edf1705fbc3ff78a423cd21e03dfc21eb4d780/runtime/objc-runtime-new.h#L2534
     public func hasRWPointer(in machO: MachOImage) -> Bool {
-//        if FAST_IS_RW_POINTER_32 != 0 {
-            return numericCast(layout.dataVMAddrAndFastFlags) & FAST_IS_RW_POINTER_32 != 0
-//        } else {
-//            guard let data = _classROData(in: machO) else {
-//                return false
-//            }
-//            return data.isRealized
-//        }
+        if FAST_IS_RW_POINTER_32 != 0 {
+            return layout.dataVMAddrAndFastFlags & UInt32(truncatingIfNeeded: FAST_IS_RW_POINTER_32) != 0
+        }
+        // Both RO and RW layouts start with flags; 32-bit ABIs identify RW
+        // data by RW_REALIZED because they do not have a fast pointer bit.
+        let address = UInt(layout.dataVMAddrAndFastFlags) & FAST_DATA_MASK_32
+        guard let bytes = readMemorySnapshot(at: address, byteCount: MemoryLayout<UInt32>.size) else {
+            return false
+        }
+        let flags = bytes.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+        return ObjCClassRWDataFlags(rawValue: flags).contains(.realized)
     }
 
     public func classROData(in machO: MachOImage) -> ClassROData? {
@@ -107,9 +110,9 @@ extension ObjCClass32 {
     }
 
     public func version(in machO: MachOImage) -> Int32 {
-        if let rw = classRWData(in: machO),
-           let ext = rw.ext(in: machO) {
-            return numericCast(ext.version)
+        if let rw = classRWData(in: machO) {
+            if let ext = rw.ext(in: machO) { return numericCast(ext.version) }
+            return rw.flags.contains(.meta) ? 7 : 0
         }
         guard let data = readDirectClassROData(in: machO).value else {
             return 0

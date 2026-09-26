@@ -38,6 +38,15 @@ struct ObjCOutputTransformerTests {
         #expect(module.transform(input).string == "CGFloat value")
     }
 
+    @Test("CType replacements match a complete primitive and preserve qualifier spacing")
+    func cTypeDoesNotReplacePartOfAnotherPrimitive() {
+        let module = Transformer.CType(isEnabled: true, replacements: [.long: "Replacement", .char: "Byte", .double: "Float64"])
+        #expect(module.transform(semanticKeywords(["long", "double"])).string == "long double")
+        #expect(module.transform(semanticKeywords(["unsigned", "char"])).string == "unsigned char")
+        #expect(module.transform(semanticKeywords(["const", "double"])).string == "const Float64")
+        #expect(module.transform(semanticKeywords(["long"])).string == "Replacement")
+    }
+
     @Test("ObjCIvarOffset renders its template")
     func objcIvarOffsetRendersTemplate() {
         let module = Transformer.ObjCIvarOffset(isEnabled: true)

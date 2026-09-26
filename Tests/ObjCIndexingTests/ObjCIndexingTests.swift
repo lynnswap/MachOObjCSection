@@ -5,6 +5,7 @@ import MachOKit
 import MachOObjCSection
 import ObjCDeclarationRendering
 import ObjCDump
+import ObjCTypeDecodeKit
 import ObjectiveC
 import Semantic
 @testable import ObjCIndexing
@@ -47,6 +48,19 @@ extension NSString: ObjCIndexingFixtureProtocol {
 /// tests need no fixture binary on disk.
 @Suite("ObjC interface indexing")
 struct ObjCIndexingTests {
+    @Test("Nested C definitions are harvested through wrappers and aggregate fields")
+    func nestedCDefinitions() {
+        let bar = ObjCType.union(name: "Bar", fields: [.init(type: .int)])
+        let foo = ObjCType.struct(name: "Foo", fields: [.init(type: .pointer(type: bar), name: "child")])
+        let root = ObjCType.block(return: .pointer(type: foo), args: [.array(type: foo, size: 2)])
+        var structs: [String: ObjCInterfaceIndexer.CStructOrUnion] = [:]
+        var unions: [String: ObjCInterfaceIndexer.CStructOrUnion] = [:]
+        ObjCInterfaceIndexer.collectTypes(root, structsByName: &structs, unionsByName: &unions)
+        #expect(Set(structs.keys) == ["Foo"])
+        #expect(Set(unions.keys) == ["Bar"])
+        #expect(structs["Foo"]?.fields.first?.name == "child")
+    }
+
     /// Builds and prepares an indexer over Foundation, collecting every event
     /// it emits along the way.
     private static func makeIndexer(

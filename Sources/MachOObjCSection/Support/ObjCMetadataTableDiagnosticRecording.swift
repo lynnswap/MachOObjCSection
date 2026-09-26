@@ -161,6 +161,8 @@ internal enum ObjCMetadataTableDiagnosticRecorder {
 extension ObjCMetadataTableDiagnostic.Failure {
     internal init(_ reason: ObjCMetadataTableEntryFailureReason) {
         switch reason {
+        case .unresolvedPointer:
+            self = .unresolvedEntryPointer
         case .invalidLogicalOffset:
             self = .invalidEntryLogicalOffset
         case .invalidImplementationOffset:

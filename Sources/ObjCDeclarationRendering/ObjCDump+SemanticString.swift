@@ -441,6 +441,10 @@ extension ObjCField {
         type.semanticDecoded(level: level, context: context)
         Space()
         Variable(name ?? fallbackName)
+        if let array = context.currentArray {
+            array
+            context.currentArray = nil
+        }
         if let bitWidth {
             " : "
             Numeric(bitWidth)
