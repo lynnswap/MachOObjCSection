@@ -72,6 +72,7 @@ final class ObjCChainedBindTests: XCTestCase {
             ChainedClassFixture.Options(symbolOffset: 0xfffffff0),
             .init(stringOffset: 0xfffffff0),
             .init(stringSize: 1),
+            .init(stringSize: .max),
         ] {
             let fixture = try ChainedClassFixture(options: options)
             let roots = fixture.machO.objc.readRoots()
@@ -99,6 +100,18 @@ final class ObjCChainedBindTests: XCTestCase {
         }
     }
 
+    func testLocalDefinitionDoesNotShadowTheExportedSelfBind() throws {
+        let fixture = try ChainedClassFixture(options: .init(localDuplicate: true))
+        XCTAssertEqual(fixture.machO.objc.readRoots().classes64?.first?.offset, 0x900)
+    }
+
+    func testLocalOnlyDefinitionCannotResolveABind() throws {
+        let fixture = try ChainedClassFixture(options: .init(symbolIsExternal: false))
+        let roots = fixture.machO.objc.readRoots()
+        XCTAssertEqual(roots.classes64?.count, 0)
+        XCTAssertEqual(roots.tableDiagnostics.count, 1)
+    }
+
     func testOutOfImageBindDoesNotWrapIntoTheHeader() throws {
         let fixture = try ChainedClassFixture(options: .init(symbolDisplacement: -0x1100, importAddend: -1))
         let roots = fixture.machO.objc.readRoots()
@@ -111,6 +124,8 @@ private final class ChainedClassFixture {
     struct Options {
         var libraryOrdinal: Int8 = 0
         var definedSymbol = true
+        var symbolIsExternal = true
+        var localDuplicate = false
         var importOrdinal: UInt64 = 0
         var symbolDisplacement = 0
         var importAddend: Int32 = 0
@@ -193,7 +208,7 @@ private final class ChainedClassFixture {
         symtab.cmd = UInt32(LC_SYMTAB)
         symtab.cmdsize = UInt32(MemoryLayout<symtab_command>.size)
         symtab.symoff = options.symbolOffset
-        symtab.nsyms = options.exportOnly ? 0 : 2
+        symtab.nsyms = options.exportOnly ? 0 : (options.localDuplicate ? 3 : 2)
         symtab.stroff = options.stringOffset
         symtab.strsize = options.stringSize
         store(symtab, at: commandOffset)
@@ -201,11 +216,20 @@ private final class ChainedClassFixture {
         for (index, name, offset) in [(0, classSymbol, 1), (1, metaSymbol, classSymbol.utf8.count + 2)] {
             var symbol = nlist_64()
             symbol.n_un.n_strx = UInt32(offset)
-            symbol.n_type = UInt8(options.definedSymbol ? N_SECT | N_EXT : N_UNDF | N_EXT)
+            symbol.n_type = UInt8(options.definedSymbol ? N_SECT : N_UNDF) | UInt8(options.symbolIsExternal ? N_EXT : 0)
             symbol.n_sect = options.definedSymbol ? 1 : 0
             symbol.n_value = index == 0 ? UInt64(Int64(base + 0x1100) + Int64(options.symbolDisplacement)) : base + 0x1180
-            store(symbol, at: 0x2100 + index * MemoryLayout<nlist_64>.size)
+            store(symbol, at: 0x2100 + (index + (options.localDuplicate ? 1 : 0)) * MemoryLayout<nlist_64>.size)
             string(name, at: 0x2180 + offset)
+        }
+
+        if options.localDuplicate {
+            var local = nlist_64()
+            local.n_un.n_strx = 1
+            local.n_type = UInt8(N_SECT)
+            local.n_sect = 1
+            local.n_value = base + 0x1180
+            store(local, at: 0x2100)
         }
 
         var exports = linkedit_data_command()

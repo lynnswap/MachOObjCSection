@@ -273,9 +273,10 @@ extension MachOFile {
         guard let symtab = loadCommands.info(of: LoadCommand.symtab),
               let (stringsFile, stringsOffset) = fileHandleAndOffset(forOffset: UInt64(symtab.stroff)),
               let stringsStart = Int(exactly: stringsOffset),
+              let stringsSize = Int(exactly: symtab.strsize),
               stringsStart <= stringsFile.size,
-              Int(symtab.strsize) <= stringsFile.size - stringsStart,
-              let strings = try? stringsFile.readData(offset: stringsStart, length: Int(symtab.strsize)) else {
+              stringsSize <= stringsFile.size - stringsStart,
+              let strings = try? stringsFile.readData(offset: stringsStart, length: stringsSize) else {
             return [:]
         }
         var definitions: [String: UInt64] = [:]
@@ -297,7 +298,7 @@ extension MachOFile {
                 type = symbol.n_type
                 address = UInt64(isSwapped ? symbol.n_value.byteSwapped : symbol.n_value)
             }
-            guard type & UInt8(N_STAB | N_TYPE) == UInt8(N_SECT),
+            guard type & UInt8(N_STAB | N_TYPE | N_EXT) == UInt8(N_SECT | N_EXT),
                   stringOffset < symtab.strsize,
                   let end = strings[Int(stringOffset)...].firstIndex(of: 0),
                   let name = String(bytes: strings[Int(stringOffset)..<end], encoding: .utf8),
