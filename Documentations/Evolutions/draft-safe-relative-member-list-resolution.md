@@ -4,7 +4,7 @@
 - **作者**: Kazuki Nakashima
 - **创建日期**: 2026-08-19
 - **最后更新**: 2026-08-19
-- **关联提案**: [0006](0006-safe-objc-protocol-metadata-traversal.md)
+- **关联提案**: [draft](draft-safe-objc-protocol-metadata-traversal.md)
 - **配套文档**: 无 —— 本文是本批 owner、SPI 与验证契约的正本
 
 ## 摘要

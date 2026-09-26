@@ -1,0 +1,64 @@
+name: Version Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  version-check:
+    name: Verify version metadata
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Extract BundledVersion.value
+        id: version
+        run: |
+          set -euo pipefail
+          file="Sources/objc-section/Version.swift"
+          value=$(grep -m1 -E 'static[[:space:]]+let[[:space:]]+value[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | sed -E 's/.*"([^"]+)".*/\1/' || true)
+          if [ -z "$value" ]; then
+            echo "::error file=$file::Failed to extract BundledVersion.value"
+            exit 1
+          fi
+          echo "version=$value" >> "$GITHUB_OUTPUT"
+          echo "BundledVersion.value = $value"
+
+      - name: Verify fork numbering
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # release.yml only fires for tags shaped <major>.<minor>.1NN, the
+          # fork's own numbering, which keeps upstream's tags from triggering
+          # it. A version outside that shape would be tagged and then never
+          # released, without any error, so refuse it here, before the tag.
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.1[0-9]{2}(-.+)?$ ]]; then
+            echo "::error file=Sources/objc-section/Version.swift::BundledVersion.value ($VERSION) is not a fork version (<major>.<minor>.1NN, e.g. 0.8.106). A tag with this name would not trigger release.yml."
+            exit 1
+          fi
+          echo "$VERSION follows the fork numbering"
+
+      - name: Verify matching changelog exists
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # Pre-release versions carry a SemVer pre-release suffix after '-'
+          # (e.g. 0.8.106-beta.1) and are not required to ship a changelog.
+          # Only stable releases must have a matching changelog.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "Pre-release version $VERSION — changelog not required, skipping."
+            exit 0
+          fi
+          changelog="Changelogs/$VERSION.md"
+          if [ ! -f "$changelog" ]; then
+            echo "::error file=Sources/objc-section/Version.swift::Missing $changelog — every stable BundledVersion.value must have a matching changelog. Either create $changelog or adjust Version.swift."
+            exit 1
+          fi
+          echo "Found $changelog"

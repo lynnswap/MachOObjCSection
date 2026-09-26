@@ -53,9 +53,9 @@ struct ObjCIndexingTests {
         let bar = ObjCType.union(name: "Bar", fields: [.init(type: .int)])
         let foo = ObjCType.struct(name: "Foo", fields: [.init(type: .pointer(type: bar), name: "child")])
         let root = ObjCType.block(return: .pointer(type: foo), args: [.array(type: foo, size: 2)])
-        var structs: [String: ObjCInterfaceIndexer.CStructOrUnion] = [:]
-        var unions: [String: ObjCInterfaceIndexer.CStructOrUnion] = [:]
-        ObjCInterfaceIndexer.collectTypes(root, structsByName: &structs, unionsByName: &unions)
+        var structs: [String: ObjCInterfaceIndexer<MachOImage>.CStructOrUnion] = [:]
+        var unions: [String: ObjCInterfaceIndexer<MachOImage>.CStructOrUnion] = [:]
+        ObjCInterfaceIndexer<MachOImage>.collectTypes(root, structsByName: &structs, unionsByName: &unions)
         #expect(Set(structs.keys) == ["Foo"])
         #expect(Set(unions.keys) == ["Bar"])
         #expect(structs["Foo"]?.fields.first?.name == "child")
@@ -65,7 +65,7 @@ struct ObjCIndexingTests {
     /// it emits along the way.
     private static func makeIndexer(
         collectingInto collector: EventCollector? = nil
-    ) async throws -> ObjCInterfaceIndexer {
+    ) async throws -> ObjCInterfaceIndexer<MachOImage> {
         let machO = try #require(MachOImage(name: "Foundation"))
         var handler: (@Sendable (ObjCIndexingEvent) -> Void)?
         if let collector {

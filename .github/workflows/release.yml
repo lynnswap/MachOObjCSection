@@ -1,0 +1,92 @@
+name: Release
+
+on:
+  push:
+    tags:
+      # Fork release tags only: <upstream major>.<upstream minor>.1NN, e.g.
+      # 0.8.106. Tags merged in from upstream (0.8.2 and the like) must not
+      # trigger a release of this fork. version-check.yml rejects a
+      # BundledVersion.value outside this shape, so a release cannot be
+      # skipped silently.
+      - '[0-9]+.[0-9]+.1[0-9][0-9]*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build and publish release
+    runs-on: macos-26
+    env:
+      GH_TOKEN: ${{ github.token }}
+      # This repository is a fork. Pin gh to it so a release can never be
+      # created on the upstream repository.
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Locate changelog
+        id: changelog
+        run: |
+          notes_file="Changelogs/$RELEASE_TAG.md"
+          if [ ! -f "$notes_file" ]; then
+            echo "::error::Missing changelog file: $notes_file"
+            echo "Create $notes_file before tagging this release."
+            exit 1
+          fi
+          echo "path=$notes_file" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.6"
+
+      - name: Swift version
+        run: swift --version
+
+      - name: Verify Version.swift matches tag
+        run: |
+          set -euo pipefail
+          file="Sources/objc-section/Version.swift"
+          value=$(grep -m1 -E 'static[[:space:]]+let[[:space:]]+value[[:space:]]*=[[:space:]]*"[^"]+"' "$file" | sed -E 's/.*"([^"]+)".*/\1/' || true)
+          if [ -z "$value" ]; then
+            echo "::error file=$file::Failed to extract BundledVersion.value"
+            exit 1
+          fi
+          if [ "$value" != "$RELEASE_TAG" ]; then
+            echo "::error file=$file::BundledVersion.value ($value) does not match tag ($RELEASE_TAG). Bump Version.swift before tagging."
+            exit 1
+          fi
+          echo "Version matches tag: $value"
+
+      - name: Build x86_64
+        run: swift build -c release --arch x86_64 --product objc-section
+
+      - name: Build arm64
+        run: swift build -c release --arch arm64 --product objc-section
+
+      - name: Create universal binary
+        run: |
+          mkdir -p Products
+          lipo -create \
+            .build/x86_64-apple-macosx/release/objc-section \
+            .build/arm64-apple-macosx/release/objc-section \
+            -output ./Products/objc-section
+          codesign --force --sign - ./Products/objc-section
+          lipo -info ./Products/objc-section
+          file ./Products/objc-section
+
+      - name: Compress binary
+        run: |
+          cd Products
+          zip objc-section-macos-universal.zip objc-section
+
+      - name: Create GitHub Release
+        env:
+          NOTES_FILE: ${{ steps.changelog.outputs.path }}
+        run: |
+          gh release create "$RELEASE_TAG" \
+            Products/objc-section-macos-universal.zip \
+            --title "$RELEASE_TAG" \
+            --notes-file "$NOTES_FILE"

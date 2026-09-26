@@ -1,19 +1,22 @@
 import MachOKit
 import MachOKitExtensions
+import ObjCMetadataSource
 import Semantic
 
-extension MachOImage {
+extension ObjCMetadataSource {
     /// Safely format an IMP address into a resolved virtual address string.
     ///
-    /// Returns `nil` when the raw value is zero or falls below the image base,
-    /// meaning the caller should treat it as invalid.
+    /// Returns `nil` when the raw value holds no usable implementation
+    /// pointer, meaning the caller should treat it as invalid.
+    ///
+    /// What counts as "usable" differs between a file on disk and a loaded
+    /// image, because the raw `imp` field does not mean the same thing in the
+    /// two — see ``ObjCMetadataSource/objcResolvedIMPAddress(forRawValue:)``.
     public func formattedAddress(forRawValue rawValue: UInt64) -> String? {
-        let value = UInt(rawValue)
-        let baseAddress = UInt(bitPattern: ptr)
-        guard value != 0, value >= baseAddress else {
+        guard let resolvedAddress = objcResolvedIMPAddress(forRawValue: rawValue) else {
             return nil
         }
-        return "0x\(addressString(forOffset: .init(value &- baseAddress)))"
+        return "0x\(String(resolvedAddress, radix: 16, uppercase: true))"
     }
 
     /// Build a ``Comment`` component for an IMP address.

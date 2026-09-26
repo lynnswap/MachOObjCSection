@@ -7,46 +7,42 @@ on:
     paths-ignore:
       - README.md
       - LICENSE
+      - 'Documentations/**'
+      - 'Changelogs/**'
   pull_request:
     paths-ignore:
       - README.md
       - LICENSE
+      - 'Documentations/**'
+      - 'Changelogs/**'
   workflow_dispatch:
 
 permissions:
   contents: read
 
-env:
-  DEVELOPER_DIR: /Applications/Xcode_16.2.app
-
+# No Linux job, unlike upstream's CI: this fork does not build on Linux.
+# FoundationToolbox, reached through swift-objc-dump, imports Security
+# unconditionally.
 jobs:
   build:
     name: Build & Test
-    runs-on: macos-15
+    runs-on: macos-26
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
-      - name: Select Xcode 16
-        run: sudo xcode-select -s /Applications/Xcode_16.2.app
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.6"
+
+      - name: Swift version
+        run: swift --version
 
       - name: Build
         run: swift build
 
       - name: Test
-        run: swift test
-
-  linux-build:
-    name: Linux Build
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Install Swift
-        # WORKAROUND:https://github.com/swift-actions/setup-swift/pull/680
-        uses: swift-actions/setup-swift@bb83339d1e8577741bdc6c65ba551ce7dc0fb854
-        with:
-          swift-version: '5.10.1'
-
-      - uses: actions/checkout@v4
-
-      - name: Build
-        run: swift build
+        # MachOObjCSectionTests loads a sample binary from a maintainer-local
+        # path in setUp() and fails on any other machine.
+        run: swift test --skip MachOObjCSectionTests

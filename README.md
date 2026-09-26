@@ -486,12 +486,19 @@ highest one you need:
 ```
 MachOObjCSection          parsing only
         ↑
+ObjCMetadataSource        one generic entry point onto MachOFile and MachOImage alike
+        ↑
 ObjCDeclarationRendering  ObjCClassInfo & co. → SemanticString
         ↑
-ObjCIndexing              per-image index; broadcasts inheritance / conformance
+ObjCIndexing              per-binary index; broadcasts inheritance / conformance
         ↑
 ObjCInterface             strip filtering + rendering entry point
 ```
+
+Everything above `ObjCMetadataSource` works the same whether you hand it a `MachOFile` read
+off disk — any architecture, any platform, inside a dyld shared cache or standalone — or a
+`MachOImage` already mapped into this process. See
+[Files versus loaded images](#files-versus-loaded-images).
 
 Unlike `ObjCDump`'s plain-text `headerString`, the rendered output is a `SemanticString`
 from [swift-semantic-string](https://github.com/MxIris-Reverse-Engineering/swift-semantic-string):
@@ -541,6 +548,136 @@ let declaration = builder.classInterface(
 
 `protocolInterface(named:)`, `categoryInterface(uniqueName:)`, `structInterface(named:)`
 and `unionInterface(named:)` round out the API.
+
+### Files versus loaded images
+
+The same code reads a binary off disk — pass a `MachOFile` instead of a `MachOImage`:
+
+```swift
+import MachOKit
+import ObjCIndexing
+import ObjCInterface
+
+let machOFile = try MachOFile(url: URL(fileURLWithPath: "/path/to/Some.framework/Some"))
+
+let indexer = ObjCInterfaceIndexer(machO: machOFile, imagePath: machOFile.imagePath)
+try await indexer.prepare()
+
+let builder = ObjCInterfaceBuilder(indexer: indexer, machO: machOFile)
+print(builder.classInterface(named: "SomeClass")?.string ?? "")
+```
+
+The generic parameter is inferred from the argument, so existing call sites need no change.
+Places that *spell the type out* — a stored property, a declared return type — do:
+`ObjCInterfaceIndexer` becomes `ObjCInterfaceIndexer<MachOImage>`.
+
+Two differences between the modes are worth knowing before you trust the output:
+
+- **A superclass chain read from a standalone file stops at the first superclass defined in
+  another binary.** File mode can follow a superclass across binaries only within one dyld
+  shared cache; a loaded image has every dependency mapped in and walks to the root class.
+  `stripOverrides` works off that chain, so it strips less in file mode.
+- **`classRWData` / `hasRWPointer` stay off the generic interface.** RW data is written by the
+  Objective-C runtime when it realizes a class, so it does not exist in a file at all.
+  Exposing them generically would only create an interface that always returns `nil` in file
+  mode. Callers that need them keep to the `MachOImage`-specific path.
+
+## Command Line
+
+`objc-section` exposes the same layers as a command-line tool, so a binary can be dumped
+without loading it into a process — including binaries for another architecture or platform.
+
+Download the universal (Apple Silicon + Intel) macOS binary from
+[GitHub Releases](https://github.com/MxIris-Reverse-Engineering/MachOObjCSection/releases),
+or build it from source (Xcode 26.0 / Swift 6.2 or later):
+
+```bash
+swift build -c release --product objc-section
+```
+
+```bash
+# Every Objective-C declaration in a binary
+objc-section dump /path/to/Some.framework/Some
+
+# One declaration
+objc-section interface NSString /path/to/Some.framework/Some
+
+# An image inside a dyld shared cache
+objc-section dump /path/to/dyld_shared_cache_arm64e --dyld-shared-cache -n Foundation
+objc-section interface NSError --uses-system-dyld-shared-cache -n Foundation
+
+# A fat binary needs an architecture
+objc-section dump /path/to/Universal -a arm64e
+```
+
+Each of the ten `ObjCGenerationOptions` switches has a flag, and all of them default to off,
+so a bare `dump` prints the metadata as it stands:
+
+```bash
+objc-section interface ACAssetSymbolGeneratorOptions ./AssetCatalogFoundation \
+  --strip-synthesized-methods --strip-dtor-method \
+  --emit-ivar-offsets --emit-method-imp-addresses \
+  --c-type-replacement "long long=NSInteger"
+```
+
+```objc
+@interface ACAssetSymbolGeneratorOptions : NSObject {
+    NSInteger targetPlatform; // offset: 8
+    BOOL generateExtensions; // offset: 16
+    ...
+}
+
+@property (nonatomic, readonly) NSInteger targetPlatform;
+...
+
+- (id)init; // IMP: 0x10B400
+
+@end
+```
+
+Other options: `-s/--sections` to pick declaration kinds, `-f/--filter` to match names,
+`-o/--output-path` to write a file, `-c/--color-scheme` for terminal colours, and
+`-v/--verbose` to report indexing progress on stderr.
+
+### API diffing: snapshot / diff / evolution
+
+Three more subcommands compare the ObjC API surface across binaries — the counterpart of
+`swift-section`'s ABI commands, with identical option spelling. Any input can be a Mach-O /
+fat binary, a dyld shared cache (with `--dyld-shared-cache -n <image>`), or a baseline JSON
+produced by `snapshot`; the two are distinguished automatically.
+
+```bash
+# Freeze a binary's ObjC API as a persistable baseline (indexing is the slow part;
+# comparisons against the JSON later need no original binary)
+objc-section snapshot 15.5/dyld_shared_cache_arm64e --dyld-shared-cache -n CoreLocation \
+  --label 15.5 -o CoreLocation-15.5.json
+
+# Structured diff: classes / protocols / categories, with methods, properties, ivars,
+# protocol adoptions and superclass changes classified as added / removed / modified
+objc-section diff CoreLocation-15.5.json CoreLocation-26.5.json
+
+# Track every declaration's lifeline across N ordered versions
+objc-section evolution CoreLocation-*.json --labels 15.5,26.0,26.5 --summary-only
+```
+
+Both `diff` and `evolution` support `--json` for structured output, `--summary-only` for
+just the verdict, `--fail-on-breaking` to exit nonzero on an API-breaking change (CI
+gating), and `-o` to write the report to a file. The engine lives in the `ObjCDiffing`
+library product (`ObjCAPIDiffer` / `ObjCAPIEvolutionBuilder` /
+`ObjCAPISnapshotDocument`), usable directly from Swift via
+`ObjCAPISnapshotBuilder` in `ObjCInterface`.
+
+Baselines carry a `formatVersion` header. The identity/payload key scheme is the de-facto
+persistence format, so a baseline written by a different format version is rejected with a
+clear error instead of being silently mis-compared — regenerate it with the current tool.
+
+> [!NOTE]
+> Reading an image out of a **macOS 26** dyld shared cache needs MachOKit 0.52.101 or newer,
+> which this package already requires. Earlier versions resolve the objc header-info offsets
+> against the subcache holding the optimization structure rather than the one holding the
+> image, so the objc image index never resolves and the output silently comes back with ivars
+> but no methods, properties or protocols. Fixed by
+> [p-x9/MachOKit#310](https://github.com/p-x9/MachOKit/pull/310).
 
 ### ObjCIndexing
 

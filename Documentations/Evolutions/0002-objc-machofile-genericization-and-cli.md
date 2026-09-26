@@ -1,15 +1,17 @@
 # 0002 - ObjC 索引层泛型化到 MachOFile，并提供 objc-section CLI
 
-- **状态**: Draft
+- **状态**: Implemented
 - **作者**: JH
 - **创建日期**: 2026-08-09
-- **最后更新**: 2026-08-10
+- **最后更新**: 2026-08-12
 - **所属愿景**: 无
 - **关联提案**:
   - [0001](0001-objc-rendering-and-indexing-downstreaming.md)（前置，必须先落地）
   - [0003](0003-objc-relationship-tables-return-to-application.md)（**前置，应先于本提案落地**，见「二、泛型化」末段）
-- **实现分支 / PR**: 待定
-- **配套文档**: 待定 —— 落地时登记实现说明 / 使用指南的链接
+- **实现分支 / PR**: main
+- **配套文档**:
+  - [objc-section 使用指南](../Guides/ObjCSectionCommandLine.md) —— 面向调用方的用法、四条隐藏契约与已知限制
+  - [泛型化到 MachOFile 的实现说明](../Internal/ObjCMetadataSourceGenericization.md) —— 与本提案不一致之处、`ResolvedSource` 的由来、落地时发现的两个上游缺陷
 
 ## 摘要
 
@@ -464,3 +466,12 @@ shim 协议的成本只有约 120 行的纯转发代码，一次性付清。
 | 2026-08-09 | 泛型化与 CLI 合为一篇 | 泛型化本身无可交付价值，唯一目的就是让 CLI 成为可能；且 CLI 是验证泛型化是否够用的最好手段。拆开会让第一篇变成无法独立验证的纯重构 |
 | 2026-08-09 | 确认可做成纯新增 | 查证 `ObjCClassRODataProtocol.name(in: MachOFile)` 已存在，缺失的 `ObjCClassProtocol.name(in: MachOFile)` 可用它在新文件里补出。因此无需修改任何上游文件，fork 冲突风险与 0001 同级 |
 | 2026-08-09 | `classRWData` / `hasRWPointer` 排除在泛型接口外 | 它们是 runtime realize class 后才存在的数据，磁盘文件里没有。泛型化会制造「文件模式下永远返回 nil」的假接口。查证现有索引器未使用它们，排除不丢能力 |
+| 2026-08-12 | Accepted → In Progress → Implemented | 一次性落地全部 8 步 |
+| 2026-08-12 | `(Self, Class)` 改为 `(ResolvedSource, Class)` | 提案的签名编译不过：`MachOFile` 是非 final class，Swift 不允许它满足把 `Self` 用在元组里（即非顶层参数 / 返回值位置）的 requirement。改用一个 associatedtype，两个 conformance 都写成自身，并加 `where ResolvedSource.ResolvedSource == ResolvedSource` 让超类链循环的类型在一跳后固定 |
+| 2026-08-12 | 地址抽象从 `objcResolvedAddress(forOffset:)` 扩大到 `objcResolvedIMPAddress(forRawValue:)` | 提案把语义写窄了：`imp` 原始值在两种模式下含义就不同 —— 镜像模式是带 slide 的绝对函数指针，文件模式在 `ObjCMethodList` 解码时已经换算成偏移。只抽象「偏移 → 地址」这半段的话，镜像模式那次减基址无处安放。边界前移一格，覆盖整段「原始值 → 地址」 |
+| 2026-08-12 | 渲染层选泛型而非 existential | `ObjCRenderingContext` 只用 `machO` 解析 IMP 地址，存成 `any ObjCMetadataSource` 可以零传染。但那样 `context.machO` 的类型会从 `MachOImage` 变成 existential，下游读它的代码全断；泛型方案下它仍是推断出的具体类型。代价是约 15 处渲染方法签名加泛型参数，一次性机械改动，且都是本 fork 自己的文件 |
+| 2026-08-12 | 源码兼容性补充一条例外 | 「调用点无需改写」只覆盖调用点。**显式写出类型名的地方必须补泛型参数**（变量类型标注、函数返回类型、存储属性类型）。本仓库测试撞上三处 |
+| 2026-08-12 | 快照测试换成选项解析 + 双模式一致性 | 查证对标对象 `SwiftSectionCommandTests` 实际只有一份选项组解析测试，并无系统二进制快照；而对系统二进制固化快照会随 macOS 版本漂移、异机不可复现。改为 `ObjCSectionCommandTests`（选项解析）+ `ObjCMetadataSourceTests`（同一二进制双模式索引与渲染逐字符比对）。后者用测试 bundle 自己的二进制 —— 它是唯一既已加载又在磁盘上有独立文件的目标 |
+| 2026-08-12 | 记录两个上游缺陷，不在本提案内修 | 一、macOS 26 的 dyld cache 上 `objcImageIndex` 拿不到，导致 cache 镜像只剩 ivar，方法 / 属性 / 协议全空；macOS 15.5 的 cache 正常。二、纯 Swift 类的 `ivar_t.offset` 两种模式读出的值和条数都可能不同。两者调用链都在上游 API 内部，本层只是转发 |
+| 2026-08-12 | 第一个缺陷查明根因并确认上游已修 | 失败点不在最初判断的 `DyldCache.objcOptimization`（本库的 `locateValue` 会跨子 cache 找，拿得到），而在 `ObjCHeaderOptimizationROProtocol.headerInfo(in:for:)`：比对 header 偏移时用「找到 optimization 结构的那个子 cache」而非「镜像所属的子 cache」换算，3163 条一条都匹配不上。上游 [p-x9/MachOKit#310](https://github.com/p-x9/MachOKit/pull/310) 正是修这一行。该形态自 MachOKit 0.23.0 起就存在，但只有 macOS 26 这种子 cache 布局才触发；镜像模式那条重载比的是指针，不受影响 |
+| 2026-08-12 | MachOKit 依赖提到 0.52.101，第一个缺陷解决 | fork merge upstream/main 后发布了 `0.52.101`（`fec9503`，含 #310）。本项目只改 `Package.swift` 的 `from:`，**代码一行未动**。实测 `objc-section interface NSFileManager --uses-system-dyld-shared-cache -n Foundation` 从 5 行变成 132 行完整接口，全部测试仍然通过。文档中该条从「已知限制」改写为「依赖版本下限」 |

@@ -1,4 +1,4 @@
-name: Linux
+name: Linux memory probe
 on:
   push:
     branches: [main]
@@ -17,6 +17,3 @@ jobs:
         run: |
           cc -std=gnu11 -Wall -Wextra -Werror -ISources/MachOObjCSectionC/include Sources/MachOObjCSectionC/memory_probe.c Tests/MemoryProbeC/smoke.c -o /tmp/memory-probe-test
           /tmp/memory-probe-test
-      - name: Build the reader with Swift 6.3.3
-        run: |
-          docker run --rm -v "$GITHUB_WORKSPACE:/workspace" -w /workspace swift:6.3.3-jammy@sha256:0c9411e2f70154a16f3e5660299d618a3642a445b446efe2aa637a4d01a83d54 swift build --target MachOObjCSection

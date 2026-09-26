@@ -1,5 +1,5 @@
 {
-  "originHash" : "8658378efd52891ea05f45712dacb395d0c4475dcdb9ff26d9e0e37d8ea74a3c",
+  "originHash" : "8b69f58730af055b6563dbebbb8c1db90f18211b78d668f1728dfb96cf453a40",
   "pins" : [
     {
       "identity" : "associatedobject",
@@ -24,7 +24,7 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/lynnswap/MachOKit.git",
       "state" : {
-        "revision" : "f6a4f85280733a0e77d33f11274e7a12052c7ce1"
+        "revision" : "4d272878ad8d721bb6827e5183a1358eeeb0973d"
       }
     },
     {
@@ -43,6 +43,24 @@
       "state" : {
         "revision" : "96d782a576273b73b277b577943a2a25b00b919e",
         "version" : "0.5.0"
+      }
+    },
+    {
+      "identity" : "rainbow",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/onevcat/Rainbow",
+      "state" : {
+        "revision" : "711ca908ca19d16e577d575c8d0a48151a16bb1b",
+        "version" : "4.2.2"
+      }
+    },
+    {
+      "identity" : "swift-argument-parser",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/apple/swift-argument-parser",
+      "state" : {
+        "revision" : "6a52f3251125d74daf04fcbd5e6f08a75d074382",
+        "version" : "1.8.2"
       }
     },
     {

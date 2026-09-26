@@ -20,15 +20,3 @@ extension Set {
         }
     }
 }
-
-extension String {
-    /// Uppercases only the first character, leaving the rest untouched.
-    ///
-    /// Used to derive the default setter selector from a property name
-    /// (`title` → `setTitle:`). `capitalized` would lowercase the remainder
-    /// and mangle names like `URLString`.
-    var uppercasedFirst: String {
-        guard let first else { return self }
-        return first.uppercased() + dropFirst()
-    }
-}

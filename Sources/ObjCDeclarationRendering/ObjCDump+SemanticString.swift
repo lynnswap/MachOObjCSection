@@ -1,6 +1,8 @@
 import Foundation
+import FoundationToolbox
 import MachOKit
 import MachOKitExtensions
+import ObjCMetadataSource
 import Semantic
 import ObjCDump
 import ObjCTypeDecodeKit
@@ -12,9 +14,14 @@ import ObjCTypeDecodeKit
 /// The ivar-offset comment arrives as a closure rather than as a template
 /// object so that this module stays independent of the template engine — see
 /// ``ObjCPrimitiveTypePattern`` for the same reasoning.
-public final class ObjCRenderingContext {
-    /// The image the declaration was read from; used to resolve IMP addresses.
-    public let machO: MachOImage
+///
+/// The `MachO` parameter is whatever the declaration was read from — a
+/// `MachOFile` on disk or a `MachOImage` in this process. It is inferred from
+/// the `machO` argument at `init`, so call sites written before this type was
+/// generic keep compiling unchanged.
+public final class ObjCRenderingContext<MachO: ObjCMetadataSource> {
+    /// The Mach-O the declaration was read from; used to resolve IMP addresses.
+    public let machO: MachO
 
     /// Which members to strip and which comments to add.
     public var options: ObjCGenerationOptions
@@ -40,7 +47,7 @@ public final class ObjCRenderingContext {
     public var isExpandHandler: (_ name: String?, _ isStruct: Bool) -> Bool
 
     public init(
-        machO: MachOImage,
+        machO: MachO,
         options: ObjCGenerationOptions = .default,
         cTypeReplacements: [ObjCPrimitiveTypePattern: String] = [:],
         ivarOffsetCommentBuilder: (@Sendable (Int) -> String)? = nil,
@@ -62,7 +69,7 @@ public final class ObjCRenderingContext {
 
 extension ObjCClassInfo {
     @SemanticStringBuilder
-    public func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    public func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         Keyword("@interface")
         Space()
         TypeDeclaration(kind: .class, name)
@@ -122,7 +129,7 @@ extension ObjCClassInfo {
 
 extension ObjCProtocolInfo {
     @SemanticStringBuilder
-    public func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    public func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         Keyword("@protocol")
         Space()
         TypeDeclaration(kind: .protocol, name)
@@ -195,7 +202,7 @@ extension ObjCProtocolInfo {
 
 extension ObjCCategoryInfo {
     @SemanticStringBuilder
-    public func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    public func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         Keyword("@interface")
         Space()
         TypeName(kind: .class, className)
@@ -242,7 +249,7 @@ extension ObjCCategoryInfo {
 
 extension ObjCIvarInfo {
     @SemanticStringBuilder
-    func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         if let type, case .bitField(let width) = type {
             ObjCField(type: .int, name: name, bitWidth: width)
                 .semanticString(fallbackName: name, context: context)
@@ -286,7 +293,7 @@ extension ObjCIvarInfo {
 
 extension ObjCPropertyInfo {
     @SemanticStringBuilder
-    func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         Keyword("@property")
 
         Joined(separator: ", ", prefix: " (", suffix: ")") {
@@ -367,7 +374,7 @@ extension ObjCPropertyInfo {
         if context.options.addPropertyAccessorAddressComments {
             let imps = isClassProperty ? context.classMethodIMPs : context.methodIMPs
             let getterName = customGetter ?? name
-            let setterName = customSetter ?? "set\(name.uppercasedFirst):"
+            let setterName = customSetter ?? "set\(name.box.uppercasedFirst()):"
 
             Joined(separator: " ", prefix: " ") {
                 if let getterIMP = imps[getterName] {
@@ -383,7 +390,7 @@ extension ObjCPropertyInfo {
 
 extension ObjCMethodInfo {
     @SemanticStringBuilder
-    func semanticString(using context: ObjCRenderingContext) -> SemanticString {
+    func semanticString<MachO: ObjCMetadataSource>(using context: ObjCRenderingContext<MachO>) -> SemanticString {
         if isClassMethod {
             "+"
         } else {
@@ -437,7 +444,7 @@ extension ObjCMethodInfo {
 
 extension ObjCField {
     @SemanticStringBuilder
-    public func semanticString(fallbackName: String, level: Int = 1, context: ObjCRenderingContext) -> SemanticString {
+    public func semanticString<MachO: ObjCMetadataSource>(fallbackName: String, level: Int = 1, context: ObjCRenderingContext<MachO>) -> SemanticString {
         type.semanticDecoded(level: level, context: context)
         Space()
         Variable(name ?? fallbackName)
@@ -483,7 +490,7 @@ extension ObjCModifier {
 
 extension ObjCType {
     @SemanticStringBuilder
-    func semanticDecodedForArgument(context: ObjCRenderingContext) -> SemanticString {
+    func semanticDecodedForArgument<MachO: ObjCMetadataSource>(context: ObjCRenderingContext<MachO>) -> SemanticString {
         switch self {
         case .struct(let name, let fields),
              .union(let name, let fields):
@@ -533,7 +540,7 @@ extension ObjCType {
     }
 
     @SemanticStringBuilder
-    func semanticDecoded(level: Int = 1, context: ObjCRenderingContext) -> SemanticString {
+    func semanticDecoded<MachO: ObjCMetadataSource>(level: Int = 1, context: ObjCRenderingContext<MachO>) -> SemanticString {
         switch self {
         case .class:
             TypeName(kind: .class, "Class")
@@ -763,33 +770,6 @@ extension ObjCType {
     }
 }
 
-extension ObjCCategoryInfo {
-    /// The category spelled the way it is indexed and displayed:
-    /// `NSString(MyAdditions)`.
-    public var uniqueName: String {
-        "\(className)(\(name))"
-    }
-}
-
-extension ObjCPropertyInfo {
-    /// The backing ivar named by the property's `V` attribute, if any.
-    public var ivar: String? {
-        attributes.compactMap(\.ivar).first
-    }
-
-    /// The getter named by the property's `G` attribute, if it overrides the
-    /// default selector.
-    public var customGetter: String? {
-        attributes.compactMap(\.getter).first
-    }
-
-    /// The setter named by the property's `S` attribute, if it overrides the
-    /// default selector.
-    public var customSetter: String? {
-        attributes.compactMap(\.setter).first
-    }
-}
-
 // MARK: - Naming Intelligent
 
 /// A utility for intelligently guessing parameter names from Objective-C method labels.
@@ -939,11 +919,11 @@ private enum NamingIntelligent {
         if let end = lastMatchEnd {
             let afterPreposition = String(workingLabel[end...])
             if !afterPreposition.isEmpty {
-                return afterPreposition.lowercasedFirst
+                return afterPreposition.box.lowercasedFirst()
             }
         }
 
         // No preposition found, use the working label
-        return workingLabel.lowercasedFirst
+        return workingLabel.box.lowercasedFirst()
     }
 }

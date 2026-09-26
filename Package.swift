@@ -68,6 +68,10 @@ let package = Package(
             targets: ["MachOObjCSection"]
         ),
         .library(
+            name: "ObjCMetadataSource",
+            targets: ["ObjCMetadataSource"]
+        ),
+        .library(
             name: "ObjCDeclarationRendering",
             targets: ["ObjCDeclarationRendering"]
         ),
@@ -83,6 +87,14 @@ let package = Package(
             name: "ObjCOutputTransformer",
             targets: ["ObjCOutputTransformer"]
         ),
+        .library(
+            name: "ObjCDiffing",
+            targets: ["ObjCDiffing"]
+        ),
+        .executable(
+            name: "objc-section",
+            targets: ["objc-section"]
+        ),
     ],
     dependencies: [
         .package(
@@ -92,7 +104,7 @@ let package = Package(
             ),
             remote: .package(
                 url: "https://github.com/lynnswap/MachOKit.git",
-                revision: "f6a4f85280733a0e77d33f11274e7a12052c7ce1"
+                revision: "4d272878ad8d721bb6827e5183a1358eeeb0973d"
             )
         ),
         .package(
@@ -133,6 +145,30 @@ let package = Package(
             url: "https://github.com/apple/swift-collections",
             from: "1.2.0"
         ),
+        // Already in the graph before this line existed — `swift-objc-dump`'s
+        // `ObjCTypeDecodeKit` depends on `FoundationToolbox`. Declaring it
+        // directly costs nothing in resolution or build time and lets the
+        // targets below drop their hand-rolled copies of `Mutex` and
+        // `uppercasedFirst` — see proposal 0005.
+        .package(
+            local: .package(
+                path: "../FrameworkToolbox",
+                isRelative: true
+            ),
+            remote: .package(
+                url: "https://github.com/Mx-Iris/FrameworkToolbox",
+                from: "0.9.0"
+            )
+        ),
+        // Command-line only. The library targets stay free of both.
+        .package(
+            url: "https://github.com/apple/swift-argument-parser",
+            from: "1.5.1"
+        ),
+        .package(
+            url: "https://github.com/onevcat/Rainbow",
+            from: "4.0.0"
+        ),
     ],
     targets: [
         .target(
@@ -147,24 +183,46 @@ let package = Package(
         .target(
             name: "MachOObjCSectionC"
         ),
+        // The generic entry point onto Objective-C metadata. It restates
+        // MachOObjCSection's parallel `MachOFile` / `MachOImage` overloads as
+        // requirements taking `Self`, which is what lets everything above it be
+        // written once instead of twice. Kept out of the core target on
+        // purpose — see proposal 0002's "Alternatives considered".
         .target(
-            name: "ObjCDeclarationRendering",
+            name: "ObjCMetadataSource",
             dependencies: [
                 "MachOObjCSection",
                 "MachOKit",
                 .product(name: "MachOKitExtensions", package: "MachOKitExtensions"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
+            ]
+        ),
+        .target(
+            name: "ObjCDeclarationRendering",
+            dependencies: [
+                "MachOObjCSection",
+                "ObjCMetadataSource",
+                "MachOKit",
+                .product(name: "MachOKitExtensions", package: "MachOKitExtensions"),
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                // For `.box.uppercasedFirst()` / `.box.lowercasedFirst()`.
+                .product(name: "FoundationToolbox", package: "FrameworkToolbox"),
             ]
         ),
         .target(
             name: "ObjCIndexing",
             dependencies: [
                 "MachOObjCSection",
+                "ObjCMetadataSource",
                 "ObjCDeclarationRendering",
                 "MachOKit",
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                // For `@Mutex`. Deliberately `SwiftStdlibToolbox` rather than
+                // `OSToolbox`: the split that moves `Mutex` down a layer is not
+                // released yet, and once it is, this target re-exports it.
+                .product(name: "SwiftStdlibToolbox", package: "FrameworkToolbox"),
             ]
         ),
         .testTarget(
@@ -182,15 +240,50 @@ let package = Package(
                 .product(name: "Semantic", package: "swift-semantic-string"),
             ]
         ),
+        // The ObjC API diff engine (proposal 0006). Pure value computation
+        // over the ObjCDump info model — deliberately independent of the
+        // rendering and indexing layers, mirroring how MachOSwiftSection's
+        // SwiftDiffing sits on SwiftDeclaration alone. ObjCMetadataSource is
+        // here only for the model-derived accessors (`uniqueName` & co.).
+        .target(
+            name: "ObjCDiffing",
+            dependencies: [
+                "ObjCMetadataSource",
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
+            ]
+        ),
         .target(
             name: "ObjCInterface",
             dependencies: [
                 "MachOObjCSection",
+                "ObjCMetadataSource",
                 "ObjCDeclarationRendering",
                 "ObjCIndexing",
+                "ObjCDiffing",
                 "MachOKit",
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                // For `.box.uppercasedFirst()`.
+                .product(name: "FoundationToolbox", package: "FrameworkToolbox"),
+            ]
+        ),
+        .executableTarget(
+            name: "objc-section",
+            dependencies: [
+                "MachOObjCSection",
+                "ObjCMetadataSource",
+                "ObjCDeclarationRendering",
+                "ObjCIndexing",
+                "ObjCInterface",
+                "ObjCOutputTransformer",
+                "ObjCDiffing",
+                "MachOKit",
+                .product(name: "MachOKitExtensions", package: "MachOKitExtensions"),
+                .product(name: "Semantic", package: "swift-semantic-string"),
+                .product(name: "OutputTransformer", package: "swift-semantic-string"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+                .product(name: "Rainbow", package: "Rainbow"),
             ]
         ),
         .testTarget(
@@ -207,8 +300,10 @@ let package = Package(
                 "ObjCInterface",
                 "ObjCIndexing",
                 "ObjCDeclarationRendering",
+                "ObjCDiffing",
                 .product(name: "Semantic", package: "swift-semantic-string"),
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
+                .product(name: "FoundationToolbox", package: "FrameworkToolbox"),
             ]
         ),
         .testTarget(
@@ -217,6 +312,34 @@ let package = Package(
                 "ObjCIndexing",
                 "ObjCDeclarationRendering",
                 .product(name: "Semantic", package: "swift-semantic-string"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
+            ]
+        ),
+        .testTarget(
+            name: "ObjCMetadataSourceTests",
+            dependencies: [
+                "ObjCMetadataSource",
+                "ObjCIndexing",
+                "ObjCInterface",
+                "ObjCDeclarationRendering",
+                .product(name: "MachOKitExtensions", package: "MachOKitExtensions"),
+                .product(name: "Semantic", package: "swift-semantic-string"),
+                .product(name: "ObjCDump", package: "swift-objc-dump"),
+            ]
+        ),
+        .testTarget(
+            name: "ObjCSectionCommandTests",
+            dependencies: [
+                "objc-section",
+                "ObjCDeclarationRendering",
+                "ObjCOutputTransformer",
+                .product(name: "ArgumentParser", package: "swift-argument-parser"),
+            ]
+        ),
+        .testTarget(
+            name: "ObjCDiffingTests",
+            dependencies: [
+                "ObjCDiffing",
                 .product(name: "ObjCDump", package: "swift-objc-dump"),
             ]
         ),

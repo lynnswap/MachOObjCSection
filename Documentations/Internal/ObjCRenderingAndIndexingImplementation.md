@@ -1,7 +1,9 @@
 # ObjC 渲染层与索引层的实现说明
 
 - **对应提案**: [0001](../Evolutions/0001-objc-rendering-and-indexing-downstreaming.md)
-- **最后更新**: 2026-08-10
+- **后续订正**: [0005](../Evolutions/0005-adopt-frameworktoolbox-utilities.md) 推翻了 0001 关于
+  Linux 与 FrameworkToolbox 的两条判断，本文相应两节已更新
+- **最后更新**: 2026-08-14
 
 这份文档记录 0001 落地过程中那些**从代码本身看不出来**的决策：为什么某条看起来更简单的路走不通，
 以及哪些地方与提案的设想不一致。提案是决策快照，保持原貌；实际实现的偏差记在这里。
@@ -99,6 +101,24 @@ public var ivarOffsetCommentBuilder: (@Sendable (Int) -> String)?
 （`Int.init(_:)`，溢出会 trap），`.box.bitPattern.int` 是**位模式转换**
 （`Int.init(bitPattern:)`）。上表全部属于后者。
 
+### 订正（0005）：这个改写没有保住 Linux
+
+上面这段推理是对的，**结论是错的** —— 同一个 `FoundationToolbox` 从另一条边进来了：
+
+```
+MachOObjCSection ──> ObjCDump ──> ObjCTypeDecodeKit ──> FoundationToolbox
+```
+
+`swift-objc-dump` 自 `cab0d68`（2026-01-03）起就依赖它，也就是说 0001 落地时这条边已经存在。
+`FoundationToolbox` 的 Keychain 三个文件无条件 `import Security`，所以**本库在 Linux 上从
+0001 之前就构建不过**，把 `MachOKitExtensions` 里那三处改写成标准库并没有保住任何东西。
+
+改写本身**保留不回退** —— 标准库调用等价且更直接，少一个依赖也不是坏事。要恢复 Linux，
+前置条件是让 `swift-objc-dump` 摘掉 `FoundationToolbox`，那是另一个仓库的事。
+
+这次核对漏掉 `ObjCDump` 这条边的教训：**判断一个依赖在不在图里，看 `Package.resolved`，
+不要只顺着自己直接声明的那几条边推**。`frameworktoolbox` 在那份文件里一直躺着。
+
 没有在**不加同名 public 扩展**上让步：曾考虑在 `MachOKitExtensions` 里补一套同形的
 `String.lastPathComponent` / `UnsafeRawPointer.bitPattern`，让源码一行不改。放弃了 ——
 MachOSwiftSection 同时 import `MachOKitExtensions` 和 `FoundationToolbox`，同名 public 扩展会产生歧义。
@@ -118,27 +138,50 @@ MachOSwiftSection 同时 import `MachOKitExtensions` 和 `FoundationToolbox`，�
 
 ## `ObjCIndexing` 的锁
 
-`@Mutex` 宏（`FrameworkToolbox` 的 `OSToolbox`）建立在 `os_unfair_lock` 上，Apple-only。
-`Synchronization.Mutex` 需要 macOS 15，而本包底线是 macOS 10.15。两条路都走不通，
-因此 `Internal/Mutex.swift` 用 `NSLock` 自封了一个最小实现。
-
-九处 `@Mutex` 属性**按宏原本的展开形式手工写开**：
+**现状（0005 之后）**：五个存储直接用 `FrameworkToolbox` 的 `@Mutex` 宏，
+`ObjCIndexing` 依赖 `SwiftStdlibToolbox`。
 
 ```swift
-private let _classes = Mutex<[String: ObjCClassGroup]>([:])
-private var classes: [String: ObjCClassGroup] {
-    get { _classes.withLock { $0 } }
-    set { _classes.withLock { $0 = newValue } }
+@Mutex
+private var classes: [String: ObjCClassGroup] = [:]
+```
+
+0001 当初判断这个宏「Apple-only 而本包支持 Linux」，自封了一份 `NSLock` 版
+`Internal/Mutex.swift`。**两条理由都不成立**，见上一节的订正与 0005。
+
+选宏而不是继续手写「盒子 + 计算属性」，关键在宏多生成一个 `_modify`：
+
+```swift
+_modify {
+    let valuePointer = _classes._unsafeLock()
+    defer { _classes._unsafeUnlock() }
+    yield &valuePointer.pointee
 }
 ```
 
-这个形式不能简化成「只留一个 `Mutex` 属性」：索引器内部两种写法都在用 ——
-读写整个字典走计算属性（`classes[name]`），而需要「读-改-写」原子性的地方直接用
-`_classes.withLock { … }`（例如 `_subclassesByClassName.withLock { $0[key, default: []].append(…) }`）。
-去掉任何一半都要改调用点。
+只有 get/set 的版本里，`classes[name] = group` 会展开成 get → 改副本 → set，两次独立取锁，
+中间敞开；有了 `_modify` 就是一次持锁的读-改-写。今天走查是单线程的所以看不出差别，
+但索引器是 `@unchecked Sendable` 且并行化写在 `eventHandler` 的文档里。
 
-用 `NSLock` 而非 `os_unfair_lock` 的性能代价可以接受：锁只在建索引时每次属性访问获取一次，
-不在紧内层循环里。
+**代价是 `os_unfair_lock` 不可重入**：`_modify` 的 `yield` 期间锁持着，此时再访问同一个属性
+会死锁（旧的 get/set 版本只会读到旧值）。现在每处访问都是「取一个 key / 写一个 key」的直筒
+形状，没有嵌套 —— 加访问点时要守住这条。
+
+顺带订正 0001 的一句话：它说这个双份形状不能简化，因为有些地方直接 `_classes.withLock { … }`
+做读-改-写。**那些调用点是关系反向表，0003 已经整体移出本库**，现在 `_classes` 只被它自己的
+访问器用到。
+
+### 落地时撞到的一个坑
+
+`SwiftStdlibToolbox` 的 `Mutex` 与本地 `Internal/Mutex.swift` 同名，而**同模块内的类型优先于
+导入的类型**。所以只加 `import` 不删本地文件时，宏展开里的 `Mutex` 仍解析到本地那个
+`final class`，报的错是
+
+```
+value of type 'Mutex<...>' has no member '_unsafeLock'
+```
+
+—— 看起来像宏坏了，实际是名字撞了。**先删本地文件，再改用宏**。
 
 ## 事件通道：两条合并成一条
 
@@ -191,7 +234,7 @@ let setterName = customSetter ?? "set\(name.uppercasedFirst):"                  
 | 提案怎么说 | 实际怎么做 | 原因 |
 |---|---|---|
 | 3 处 `@AssociatedObject` 换成非 ObjC-runtime 实现 | 原样保留 | 该库本身已支持 Linux，提案的归因有误 |
-| （未提及 `FoundationToolbox`） | 去掉该依赖，3 处改写成标准库调用 | 它才是真正阻断 Linux 的那个 |
+| （未提及 `FoundationToolbox`） | 去掉该依赖，3 处改写成标准库调用 | 当时认为它才是真正阻断 Linux 的那个。**0005 订正**：`ObjCDump` 从另一条边把它带了回来，改写没有保住 Linux（改写本身保留） |
 | MachOSwiftSection 源码零改动 | 改了 1 个文件（补 1 行 import） | 抽包后传递可见性断掉 |
 | `ObjCGenerationOptions` 放 `ObjCInterface` | 放 `ObjCDeclarationRendering` | 否则依赖倒挂 |
 | 新仓库位于 `/Volumes/Repositories/Private/Org/MxIris-Reverse-Engineering/` | 位于 `/Volumes/Code/Personal/` | 提案写的路径在本机不存在，与其余仓库同放一处 |
@@ -203,6 +246,8 @@ let setterName = customSetter ?? "set\(name.uppercasedFirst):"                  
 - **Linux 未实测**：本机无 Docker，无法真正跑 Linux 构建。已做的是静态核对 ——
   `MachOKitExtensions` 与三个新 target 的源码不含任何 Darwin-only API，
   依赖链（MachOKit / AssociatedObject / Semantic / OrderedCollections）均声明支持 Linux。
+  **0005 订正**：这次核对只顺着直接声明的依赖边走，漏了 `ObjCDump → ObjCTypeDecodeKit →
+  FoundationToolbox`，结论因此是错的 —— 本库在 Linux 上构建不过。
 - **远程依赖未验证**：`MachOKitExtensions` 尚未推送到 GitHub，`swift-semantic-string` 的
   `0.3.0` 尚未打 tag。所有构建均在 `USING_LOCAL_DEPENDENCIES=1` 下完成；
   远程模式要等仓库推送并打 tag 后才能验证。

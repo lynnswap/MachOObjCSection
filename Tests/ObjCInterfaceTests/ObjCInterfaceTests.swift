@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import FoundationToolbox
 import MachOKit
 import MachOObjCSection
 import ObjCDeclarationRendering
@@ -17,13 +18,13 @@ struct ObjCInterfaceTests {
     actor SharedFixture {
         static let shared = SharedFixture()
 
-        private var cached: (indexer: ObjCInterfaceIndexer, machO: MachOImage)?
+        private var cached: (indexer: ObjCInterfaceIndexer<MachOImage>, machO: MachOImage)?
 
         enum FixtureError: Swift.Error {
             case foundationImageUnavailable
         }
 
-        func load() async throws -> (indexer: ObjCInterfaceIndexer, machO: MachOImage) {
+        func load() async throws -> (indexer: ObjCInterfaceIndexer<MachOImage>, machO: MachOImage) {
             if let cached { return cached }
             guard let machO = MachOImage(name: "Foundation") else {
                 throw FixtureError.foundationImageUnavailable
@@ -36,7 +37,7 @@ struct ObjCInterfaceTests {
         }
     }
 
-    private static func makeBuilder() async throws -> ObjCInterfaceBuilder {
+    private static func makeBuilder() async throws -> ObjCInterfaceBuilder<MachOImage> {
         let (indexer, machO) = try await SharedFixture.shared.load()
         return ObjCInterfaceBuilder(indexer: indexer, machO: machO)
     }
@@ -240,8 +241,8 @@ struct ObjCInterfaceTests {
             guard let classInfo = indexer.classGroup(forName: className)?.info.first else { continue }
             let methodNames = Set(classInfo.methods.map(\.name))
 
-            for property in classInfo.properties where property.customSetter == nil {
-                let setterSelector = "set" + property.name.uppercasedFirst + ":"
+            for property in classInfo.properties where property.customSetter == nil && !property.attributes.contains(.readonly) {
+                let setterSelector = "set" + property.name.box.uppercasedFirst() + ":"
                 if methodNames.contains(setterSelector) {
                     target = (className, setterSelector)
                     break
@@ -278,8 +279,8 @@ struct ObjCInterfaceTests {
             guard let classInfo = indexer.classGroup(forName: className)?.info.first else { continue }
             let methodNames = Set(classInfo.methods.map(\.name))
 
-            for property in classInfo.properties where property.customSetter == nil {
-                let lookalikeSelector = "set" + property.name.uppercasedFirst
+            for property in classInfo.properties where property.customSetter == nil && !property.attributes.contains(.readonly) {
+                let lookalikeSelector = "set" + property.name.box.uppercasedFirst()
                 if methodNames.contains(lookalikeSelector) {
                     target = (className, lookalikeSelector)
                     break
